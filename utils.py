@@ -54,13 +54,13 @@ def _GPS2JD(gpstime):
     jd = utc
 
     return jd
-
-from astropy.time import Time
-time = Time(1224010763, format='gps', scale='utc',
-                      location=(0,0)).sidereal_time('mean').rad
-print(time)
-import numpy as np
-# Example: Compute GMST for total GPS seconds 1360800000
-gps_seconds = 1224010763
-GMST = np.mod((GreenwichMeanSiderealTime(gps_seconds)), 2*np.pi)
-print(f"GMST: {GMST:.6f} degrees")
+if __name__ == '__main__':
+    from astropy.time import Time
+    time = Time(1224010763, format='gps', scale='utc',
+                        location=(0,0)).sidereal_time('mean').rad
+    print(time)
+    import numpy as np
+    # Example: Compute GMST for total GPS seconds 1360800000
+    gps_seconds = 1224010763
+    GMST = np.mod((GreenwichMeanSiderealTime(gps_seconds)), 2*np.pi)
+    print(f"GMST: {GMST:.6f} degrees")
