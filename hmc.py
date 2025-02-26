@@ -447,6 +447,10 @@ if __name__ == "__main__":
     from raynest.model import Model
     from scipy.stats import norm
     from raynest.nest2pos import autocorrelation, acl
+    import jax
+    import jax.numpy as jnp
+    from jax import grad
+    from functools import partial
     
     class TestModel(Model):
         
@@ -468,6 +472,46 @@ if __name__ == "__main__":
         
         def gradient(self, q):
             return -q.values
+        
+
+    class GaussianMultiModal(Model):
+
+        def __init__(self, n, b):
+            self.names  = n
+            self.bounds = b
+        
+        def log_prior(self, q):
+            return 0.0
+        
+        @partial(jax.jit, static_argnums=(0,))
+        def gauss_func(self, q):
+            
+            input =jnp.array([q])
+            mean = jnp.array([4., 4.])
+            return jnp.log((jnp.exp(-jnp.sum(input**2)))+ (jnp.exp(-jnp.sum((mean-input)**2))))
+            #return -jnp.sum(input**2
+        
+        def log_likelihood(self, q):
+ 
+            mean = jnp.array([4., 4.])
+            input = q.values
+            return self.gauss_func(input)
+           
+        
+        def log_posterior(self, q):
+            return self.log_prior(q)+self.log_likelihood(q)
+
+        def potential(self, q):
+            return -self.log_posterior(q)
+        
+        def gradient(self, q):
+            grad1 = grad(self.gauss_func)
+            x = q.values
+            return np.array(grad1(x))
+        
+
+
+    
      
     ray.init()
     

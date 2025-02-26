@@ -371,7 +371,8 @@ if __name__ == '__main__':
             return jnp.sum(log_likelihoods)
         
         def log_posterior(self, q):
-            logP = self.log_prior(q)+self.log_likelihood(q)
+            #logP = self.log_prior(q)+self.log_likelihood(q)
+            logP = self.log_likelihood(q)
             return logP
 
         def potential(self, q):
@@ -385,6 +386,7 @@ if __name__ == '__main__':
             """
             params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
             g      = grad(lambda p: self.log_posterior(p))(params)
+            #g = jax.grad(self.log_posterior)(params.values)
             #print("parameter =",params)
             #print("gradient =",g)
             #print("posterior =",self.log_posterior(params))
