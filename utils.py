@@ -3,6 +3,8 @@ import jax
 from math import pi, floor
 jax.config.update("jax_enable_x64", True)
 
+
+
 # Constants
 JULIAN_DATE_START_OF_GPS_TIME = 2444244.5
 leaps = np.array([
@@ -54,6 +56,33 @@ def _GPS2JD(gpstime):
     jd = utc
 
     return jd
+
+
+
+def TimeDelayFromEarthCenter( lat, lon,  ra,dec,GPS_time,):
+  
+    # Constants
+    
+    lat = np.radians(lat)
+    lon = np.radians(lon)
+    EarthRadius = 6371.0*1e3
+    c  = 2.99792458*1e8
+    lst = GreenwichMeanSiderealTime(GPS_time) + lon 
+    
+    dec = np.radians(90- dec)
+    ra = np.radians(ra)
+    s = np.array([np.sin(dec)*np.cos(ra), np.sin(dec)*np.sin(ra), np.cos(dec)])
+    d = np.array([np.cos(lat)*np.cos(lst), np.cos(lat)*np.sin(lst), np.sin(lat)])
+    deltaT = -(np.dot(s, d))*EarthRadius/c
+    return deltaT
+
+
+
+
+
+
+
+
 if __name__ == '__main__':
     from astropy.time import Time
     time = Time(1224010763, format='gps', scale='utc',

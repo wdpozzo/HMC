@@ -5,13 +5,15 @@ c = const.c.value
 pc = const.pc.value
 import jax.numpy as jnp
 import numpy as np
-
+from functools import partial
+import jax
 from jax import jacrev, grad, jacobian, vjp
 from jax.tree_util import tree_map
 from utils import GreenwichMeanSiderealTime
 
 import sys
 import ray
+from utils import TimeDelayFromEarthCenter
 
 from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
@@ -130,6 +132,8 @@ class GWDetector:
                  
         # initialise the needed attributes
         self.name             = name
+        self.latitude         = self.available_detectors[name][0]
+        self.longitude        = self.available_detectors[name][1]
     
         if name not in self.available_detectors.keys():
             raise ValueError("Not valid argument ({}) for 'name' parameter.".format(name))
@@ -225,7 +229,7 @@ class GWDetector:
 
 
         return a_, b_
-
+    '''
     def TimeDelayFromEarthCenter():
     
         ehat_src = np.zeros(3)
@@ -239,16 +243,21 @@ class GWDetector:
             time_delay += - ehat_src[i] * detector_location[i]
         return time_delay / c
 
+    '''
+
+
     def project_waveform(self, params):
     
         h_plus, h_cross = TaylorF2(params, self.Frequency)
         #gmst = np.radians(self.lst_estimate(GPS_time))
         fplus, fcross   = self.antenna_pattern_functions(params)
-#        timedelay       = TimeDelayFromEarthCenter(detector_location, ra, dec, tc)
-        timeshift       = 0.0#*timedelay
+        
+
+        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params['ra'], params['dec'], params['tc'])
+        timeshift       = timedelay
         shift           = 2.0*np.pi*self.Frequency*timeshift
 
-        h = (fplus*h_plus + fcross*h_cross)*(np.cos(shift)-1j*np.sin(shift))
+        h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
         return h
 
     def antenna_pattern_functions(self, params):
@@ -287,7 +296,7 @@ class GWDetector:
         fcross = jnp.sin(z_)*(ampl12*jnp.cos(2*pol) - ampl11*jnp.sin(2*pol))
 
         return fplus, fcross
-    
+    #@partial(jax.jit, static_argnums=(0,))
     def log_likelihood(self, params):
     
         h = self.project_waveform(params)
@@ -376,9 +385,9 @@ if __name__ == '__main__':
             """
             params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
             g      = grad(lambda p: self.log_posterior(p))(params)
-            print("parameter =",params)
-            print("gradient =",g)
-            print("posterior =",self.log_posterior(params))
+            #print("parameter =",params)
+            #print("gradient =",g)
+            #print("posterior =",self.log_posterior(params))
             return g
      
 #    ray.init()
