@@ -1,4 +1,5 @@
 import numpy as np
+#import numpy
 import ray
 from raynest.proposal import Proposal
 from scipy.stats import multivariate_normal
@@ -9,7 +10,7 @@ import os
 import h5py
 import ray
 #
-@ray.remote
+#@ray.remote
 class HamiltonianMonteCarlo:
     """
     HamiltonianMonteCarlo acceptance rule
@@ -36,7 +37,7 @@ class HamiltonianMonteCarlo:
         self.max_storage        = max_storage
         self.samples            = deque(maxlen = self.max_storage) # the list of samples from the mcmc chain
         
-        self.mass_matrix = np.diag([1 for b in self.model.bounds])#/np.abs(b[1]-b[0])
+        self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
         self.proposal = proposal(self.model, self.rng, self.mass_matrix)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.proposal.dt)
 
@@ -127,7 +128,7 @@ class HamiltonianMonteCarlo:
         D = len(self.model.bounds)
         N = len(chain)
         cov_array = np.zeros((D,N))
-        print(D,N)
+
         if D == 1:
             name = chain[0].names[0]
             covariance = np.atleast_2d(np.var([chain[j][name] for j in range(N)]))
@@ -212,7 +213,8 @@ class HamiltonianProposal(Proposal):
         ----------
         dV: :obj:`numpy.ndarray` gradient evaluated at q
         """
-        return -self.gradient(q)
+        g = self.gradient(q)
+        return np.array([g[n] for n in q.names])
         
     def kinetic_energy(self,p):
         """
@@ -342,9 +344,9 @@ class NUTS(HamiltonianProposal):
         # Reflect momentum for out-of-bound coordinates
         p = np.where(over_upper | under_lower, -p, p)
 
-        # Update momentum using the force
+        # Update momentum using the force #WE ARE CARRYING OVER A MINUS SIGN!!!!
         F = self.force(q)
-        p -= dt * F
+        p += dt * F
 
         return p, q, self.hamiltonian(p, q)
     
@@ -406,7 +408,7 @@ class NUTS(HamiltonianProposal):
         p, q, final_energy = self.build_tree(p0, q0)
         # minus sign from the definition of the potential
         self.log_J = min(0.0, initial_energy-final_energy)
-        
+
         return q
 
 class DualAveragingStepSize:
