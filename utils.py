@@ -44,7 +44,7 @@ def _GPS2JD(gpstime):
     dot2utc = 2415020.5
     
     # Determine leap seconds
-    if gpstime < 820108814:
+    if gpstime < np.array(820108814):
         nleap = 32
     elif 820108814 <= gpstime < 914803215:
         nleap = 33
@@ -61,7 +61,6 @@ def _GPS2JD(gpstime):
 
 def TimeDelayFromEarthCenter( lat, lon,  ra,dec,GPS_time,):
   
-    # Constants
     
     lat = np.radians(lat)
     lon = np.radians(lon)

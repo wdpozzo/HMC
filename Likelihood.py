@@ -19,14 +19,20 @@ from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
 
 from hmc import HamiltonianMonteCarlo, NUTS
-
+@jax.jit
 def TaylorF2(params, frequency_array):
+
+                                   
     
-    Mc = params["mc"]
-    q  = params["q"]
-    phi_c = params["phiref"],
-    distance = jnp.exp(params["logdistance"])
-    iota = jnp.arccos(params["costheta_jn"])
+    Mc = params[0]
+    q  =0.7
+   
+    distance = 1000
+    iota = 0
+    #q  = params[1]
+   
+    #distance = jnp.exp(params[-1])
+    #iota = jnp.arccos(params[2])
     
     nu = q/((1+q)**2)
     f_max = frequency_array[-1]
@@ -78,9 +84,10 @@ def TaylorF2(params, frequency_array):
 
     phi_cross = phi_plus  + jnp.pi/2
     #phi= jnp.exp(1j*(-(phi_c) + 2*jnp.pi*frequency_array*t_c ))
-    phi= jnp.exp(1j*(-(params["phiref"])))
+    phi= jnp.exp(1j*(-(0)))
     h_plus = phi*amp*((1+(jnp.cos(iota))**2)/2)*jnp.exp(1j*phi_plus)
     h_cross = phi*amp*jnp.cos(iota)*jnp.exp(1j*phi_cross)
+    #print('AAA', h_plus)
     '''
     f_tot =jnp.arange(0, f_max, delta_f)
     h_pad = jnp.zeros(len(f_tot)-len(f))
@@ -129,7 +136,12 @@ class GWDetector:
                  datalen_download   = 32,
                  channel            = '',
                  gwpy_tag           = None):
-                 
+        self.sampling_rate = sampling_rate
+        self.segment_length = int(T*sampling_rate)
+        self.dt             = 1./self.sampling_rate
+        self.TwoDeltaTOverN       = 2.0*self.dt/jnp.float64(self.segment_length)
+       
+        '''      
         # initialise the needed attributes
         self.name             = name
         self.latitude         = self.available_detectors[name][0]
@@ -189,13 +201,13 @@ class GWDetector:
         
         # noise-weighted inner product weighting factor
         self.sigmasq              = self.PowerSpectralDensity * self.dt * self.dt
-        self.TwoDeltaTOverN       = 2.0*self.dt/jnp.float64(self.segment_length)
+        
 
         self.latitude = self.available_detectors[name][0]
         self.longitude = self.available_detectors[name][1]
         self.gamma = self.available_detectors[name][2]
         self.zeta = self.available_detectors[name][3]
-        
+        '''
     @staticmethod
     def _ab_factors(g_, lat, ra, dec, lst):
         """
@@ -247,18 +259,20 @@ class GWDetector:
 
 
     def project_waveform(self, params):
-    
+        
         h_plus, h_cross = TaylorF2(params, self.Frequency)
+        '''
         #gmst = np.radians(self.lst_estimate(GPS_time))
         fplus, fcross   = self.antenna_pattern_functions(params)
-        
 
-        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params['ra'], params['dec'], params['tc'])
+
+        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params[1], params[2], params[3])
         timeshift       = timedelay
         shift           = 2.0*np.pi*self.Frequency*timeshift
 
         h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
-        return h
+        '''
+        return h_plus
 
     def antenna_pattern_functions(self, params):
         '''
@@ -280,30 +294,35 @@ class GWDetector:
             fplus and fcross.
         '''
 
-        ra = params["ra"]#np.radians(right_ascension)
-        dec = params["dec"]#np.radians(declination)
 
-        pol = params["psi"]#np.radians(polarization)
+
+        ra = params[1]#np.radians(right_ascension)
+        dec = params[2]#np.radians(declination)
+
+        pol = params[-2]#np.radians(polarization)
         lat = jnp.radians(self.latitude)
         g_ = jnp.radians(self.gamma)
         z_ = jnp.radians(self.zeta)
-        gmst = jnp.mod(GreenwichMeanSiderealTime(params["tc"]), 2*jnp.pi)
+        gmst = jnp.mod(GreenwichMeanSiderealTime(params[3]), 2*jnp.pi)
         lst = gmst + jnp.radians(self.longitude)
         ampl11, ampl12 = self._ab_factors(g_, lat, ra, dec, lst)
 
         
         fplus = jnp.sin(z_)*(ampl11*jnp.cos(2*pol) + ampl12*jnp.sin(2*pol))
         fcross = jnp.sin(z_)*(ampl12*jnp.cos(2*pol) - ampl11*jnp.sin(2*pol))
-
+        
         return fplus, fcross
     #@partial(jax.jit, static_argnums=(0,))
     def log_likelihood(self, params):
-    
-        h = self.project_waveform(params)
-        
+        self.Frequency = jnp.linspace(10, 400, 1000)
+        #h = self.project_waveform(params)
+
+        inj_params = [ 30, 0.7, 0, np.log(1000)]
+        self.FrequencySeries = self.project_waveform(inj_params,)
+        h = self.project_waveform(params,)
         residuals = self.FrequencySeries - h
         
-        return -self.TwoDeltaTOverN*jnp.vdot(residuals, residuals/self.sigmasq).real
+        return -self.TwoDeltaTOverN*jnp.vdot(residuals, residuals).real
     
 #    def potential(self, params):
 #    
@@ -338,7 +357,8 @@ if __name__ == '__main__':
     
     class RapidPE(Model):
         
-        def __init__(self, n, b, detector_names):
+        def __init__(self, n, b, detector_names, ):
+        
             self.names  = n
             self.bounds = []
             for name in self.names:
@@ -346,22 +366,25 @@ if __name__ == '__main__':
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
         
         def log_prior(self, params):
+            '''
+            print(params)
         
             logP = 0.0
-            logP += 3.0*params['logdistance']
+            logP += 3.0*params[-1]
 
             # declination
-            logP += jnp.log(jnp.abs(jnp.cos(params['dec'])))
+            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
 
             # chirp mass and mass ratio
-            mc      = params['mc']
-            q       = params['q']
+            mc      = params[4]
+            q       = params[5]
             logP   += jnp.log(mc)
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
-            return logP
+            '''
+            return 0.0
         
         def log_posterior(self, params):
-            return self.log_prior(params) + self.log_likelihood(params)
+            return self.log_prior(jnp.array(params)) + self.log_likelihood(jnp.array(params))
         
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
@@ -370,13 +393,7 @@ if __name__ == '__main__':
             # Then use jnp.sum
             return jnp.sum(log_likelihoods)
         
-        def log_posterior(self, q):
-            #logP = self.log_prior(q)+self.log_likelihood(q)
-            logP = self.log_likelihood(q)
-            return logP
 
-        def potential(self, q):
-            return -self.log_posterior(q)
         
         def gradient(self, params):
             """
@@ -384,17 +401,22 @@ if __name__ == '__main__':
             
             sum_f (2/PSD) Re (h grad h^*) 
             """
-            params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
-            g      = grad(lambda p: self.log_posterior(p))(params)
-            #g = jax.grad(self.log_posterior)(params.values)
-            #print("parameter =",params)
+            #params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
+           # g      = grad(lambda p: self.log_posterior(p))(params)
+            g = jax.grad(self.log_posterior)(params.values)
+            #"parameter =",params)
             #print("gradient =",g)
-            #print("posterior =",self.log_posterior(params))
+            #print("posterior =",self.log_posterior(params.values))
             return g
      
 #    ray.init()
-
+    default_names = [
+                          'mc',]
+                        #  'q',
+                        #  'costheta_jn',
+                        #  'logdistance']
     # default parameters' names
+    '''
     default_names = ['phiref',
                           'ra',
                           'dec',
@@ -404,22 +426,26 @@ if __name__ == '__main__':
                           'costheta_jn',
                           'psi',
                           'logdistance']
+    
+    '''
 
+
+    #plt.plot(np.linspace(10, 200, 1000),np.real(TaylorF2([-60, 0.28, -0.03, 4],np.linspace(10, 200, 1000)))[0])
+    #plt.show()
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
-    default_bounds = {'phiref'      : [0.0,2.0*jnp.pi],
-                           'ra'          : [0.0,2.0*jnp.pi],
-                           'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-                           'tc'          : [trigtime-0.05,trigtime+0.05],
-                           'mc'          : [5.0,40.0],
-                           'q'           : [0.125,1.0],
-                           'costheta_jn' : [-1.0,1.0],
-                           'psi'         : [0.0,jnp.pi],
-                           'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
+    default_bounds = {'mc'          : [10.0,40.0],}
+                          # 'q'           : [0.125,1.0],
+                          # 'costheta_jn' : [-1.0,1.0],
+                         
+                          # 'logdistance' : [jnp.log(10.0),jnp.log(2000.0)]}
+    
+
+
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
+    n_samps    = 1e3
+    n_train    = 1e3
     e_train    = 1
     adapt_mass = 0
     verbose    = 1
@@ -427,7 +453,7 @@ if __name__ == '__main__':
     
     rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
-    M         = RapidPE(default_names, default_bounds, ["H1","L1"])
+    M         = RapidPE(default_names, default_bounds, ["H1",],)
     
     Kernel    = NUTS
     HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
@@ -445,15 +471,14 @@ if __name__ == '__main__':
         for v in s:
             x.append(v)
     
-    v = np.column_stack([[xi[n] for xi in x] for n in names])
+    v = np.column_stack([[xi[n] for xi in x] for n in default_names])
     
     import matplotlib.pyplot as plt
     from corner import corner
     corner(v,
-                     labels=names,
+                     labels=default_names,
                      quantiles=[0.05, 0.5, 0.95], truths = None,
                      show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
     
-

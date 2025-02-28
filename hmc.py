@@ -214,7 +214,7 @@ class HamiltonianProposal(Proposal):
         dV: :obj:`numpy.ndarray` gradient evaluated at q
         """
         g = self.gradient(q)
-        return np.array([g[n] for n in q.names])
+        return np.array(g)#np.array([g[n] for n in q.names])
         
     def kinetic_energy(self,p):
         """
@@ -333,13 +333,19 @@ class NUTS(HamiltonianProposal):
         # Update position q using momentum p
         q.values += dt * p * self.inverse_mass
 
-        # Reflect q against bounds
+  # Reflect q against bounds
         lower_bounds, upper_bounds = np.array(self.prior_bounds).T
+        print('lower bounds', lower_bounds)
+        print('upper_bounds', upper_bounds)
         over_upper = q.values > upper_bounds
         under_lower = q.values < lower_bounds
-
-        q.values = np.where(over_upper, 2 * upper_bounds - q.values, q.values)
-        q.values = np.where(under_lower, 2 * lower_bounds - q.values, q.values)
+        print('before_reflection', q.values)
+        print('over upper', over_upper,)
+        print('under_lower', under_lower)
+        q.values = np.where(over_upper,  upper_bounds - (q.values-upper_bounds), q.values)
+        q.values = np.where(under_lower,  lower_bounds +(lower_bounds-q.values), q.values)
+        print("after reflection", q.values)
+        #print("\n")
 
         # Reflect momentum for out-of-bound coordinates
         p = np.where(over_upper | under_lower, -p, p)
@@ -451,7 +457,8 @@ if __name__ == "__main__":
     import jax.numpy as jnp
     from jax import grad
     from functools import partial
-    
+
+
     class TestModel(Model):
         
         def __init__(self, n, b):
@@ -488,8 +495,8 @@ if __name__ == "__main__":
             
             input =jnp.array([q])
             mean = jnp.array([4., 4.])
-            return jnp.log((jnp.exp(-jnp.sum(input**2)))+ (jnp.exp(-jnp.sum((mean-input)**2))))
-            #return -jnp.sum(input**2
+            #return jnp.log((jnp.exp(-jnp.sum(input**2))))#+ (jnp.exp(-jnp.sum((mean-input)**2))))
+            return -0.5*jnp.sum(input**2)
         
         def log_likelihood(self, q):
  
@@ -505,41 +512,42 @@ if __name__ == "__main__":
             return -self.log_posterior(q)
         
         def gradient(self, q):
-            grad1 = grad(self.gauss_func)
+            #grad1 = grad(self.gauss_func)
             x = q.values
-            return np.array(grad1(x))
+            #return np.array(grad1(x))
+            return -q.values
         
 
 
     
      
-    ray.init()
+    #ray.init()
     
-    dimension = 20
+    dimension = 2
     names = ["{}".format(i) for i in range(dimension)]
-    bounds = [[-10,10] for _ in names]
+    bounds = [[-5,5] for _ in names]
     
-    n_threads  = 6
+    n_threads  = 1
     n_samps    = 1e5
     n_train    = 1e4
     e_train    = 1
-    adapt_mass = 0
-    verbose    = 0
+    adapt_mass = 1
+    verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
     
     rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
     M         = TestModel(names, bounds)
     Kernel    = NUTS
-    HMC       = [HamiltonianMonteCarlo.remote(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
+    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
     
-    samples   = ray.get([H.sample.remote(M.new_point(rng = rng[j]),
+    samples   = [H.sample(M.new_point(rng = rng[j]),
                           n=n_samps//n_threads,
                           t_epochs=e_train,
                           t=n_train,
                           mass_estimate = adapt_mass,
                           position=j)
-                 for j,H in enumerate(HMC)])
+                 for j,H in enumerate(HMC)]
     
     x = []
     for s in samples:
