@@ -336,14 +336,32 @@ if __name__ == '__main__':
     from scipy.stats import norm
     from raynest.nest2pos import autocorrelation, acl
     
-    class RapidPE(Model):
+    class RapidPE:
         
         def __init__(self, n, b, detector_names):
             self.names  = n
-            self.bounds = []
-            for name in self.names:
-                self.bounds.append([b[name][0],b[name][1]])
+            self.bounds = b
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
+        
+        def new_point(self, rng = None):
+            """
+            Create a new LivePoint, drawn from within bounds
+
+            -----------
+            Return:
+                p: :obj:`raynest.parameter.LivePoint`
+            """
+            
+            if rng is None:
+                generator = np.random.uniform
+            else:
+                generator = rng.uniform
+            logP = -np.inf
+            
+            while(logP==-np.inf):
+                p = {n:generator(self.bounds[n][0], self.bounds[n][1]) for n in self.names}
+                logP=self.log_prior(p)
+            return p
         
         def log_prior(self, params):
         
@@ -359,8 +377,32 @@ if __name__ == '__main__':
             logP   += jnp.log(mc)
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             return logP
+    
+        def in_bounds(self,param):
+            """
+            Checks whether param lies within the bounds
+
+            -----------
+            Parameters:
+                param: :obj:`raynest.parameter.LivePoint`
+
+            -----------
+            Return:
+                True: if all dimensions are within the bounds
+                False: otherwise
+            """
+#            for n in param.keys():
+#                print(n,"--",self.bounds[n][0],param[n],self.bounds[n][1])
+#                if not(self.bounds[n][0] < param[n] < self.bounds[n][1]):
+#                    return False
+            return all(self.bounds[n][0] < param[n] < self.bounds[n][1] for n in param.keys())
         
         def log_posterior(self, params):
+#            print("prior=",self.log_prior(params),"likelihood=",self.log_likelihood(params))
+            if not(self.in_bounds(params)):
+                print("out of bounds")
+                return -np.inf
+            
             return self.log_prior(params) + self.log_likelihood(params)
         
         def log_likelihood(self, params):
@@ -369,11 +411,6 @@ if __name__ == '__main__':
 
             # Then use jnp.sum
             return jnp.sum(log_likelihoods)
-        
-        def log_posterior(self, q):
-            #logP = self.log_prior(q)+self.log_likelihood(q)
-            logP = self.log_likelihood(q)
-            return logP
 
         def potential(self, q):
             return -self.log_posterior(q)
@@ -418,19 +455,35 @@ if __name__ == '__main__':
                            'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
-    e_train    = 1
+    n_samps    = 1e3
+    n_train    = 1e3
+    e_train    = 0
     adapt_mass = 0
     verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
     
-    rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
+    rng         = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
-    M         = RapidPE(default_names, default_bounds, ["H1","L1"])
+    M           = RapidPE(default_names, default_bounds, ["H1","L1"])
+    mass_matrix = np.eye(len(default_names))
     
+    stds = {'phiref'      : 0.1,
+           'ra'          : 0.1,
+           'dec'         : 0.1,
+           'tc'          : 0.01,
+           'mc'          : 1.0,
+           'q'           : 0.3,
+           'costheta_jn' : 0.2,
+           'psi'         : 0.2,
+           'logdistance' : 1}
+    
+    for i,v in enumerate(stds.values()):
+        mass_matrix[i,i] = 1/v**2
+    
+#    print("mass matrix = ",mass_matrix)
+#    exit()
     Kernel    = NUTS
-    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
+    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose) for j in range(n_threads)]
     
     samples   = [H.sample(M.new_point(rng = rng[j]),
                           n=n_samps//n_threads,

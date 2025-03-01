@@ -20,6 +20,7 @@ class HamiltonianMonteCarlo:
     def __init__(self,
                  model,
                  proposal,
+                 mass_matrix = None,
                  rng = None,
                  max_storage = None,
                  output = '.',
@@ -36,8 +37,16 @@ class HamiltonianMonteCarlo:
         
         self.max_storage        = max_storage
         self.samples            = deque(maxlen = self.max_storage) # the list of samples from the mcmc chain
-        
-        self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
+        if mass_matrix is None:
+            self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
+        else:
+#            # determine the nature of the matrix, is it a callabe function or a numpy array
+#            if callable(mass_matrix):
+#                self.mass_matrix = mass_matrix()
+#            else:
+#                self.mass_matrix = mass_matrix
+            self.mass_matrix = mass_matrix
+            
         self.proposal = proposal(self.model, self.rng, self.mass_matrix)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.proposal.dt)
 
@@ -67,8 +76,9 @@ class HamiltonianMonteCarlo:
                 
                 self.acceptance     = float(sub_accepted)/float(sub_counter)
                 self.proposal.dt, _ = self.step_tuning.update(self.acceptance)
+                
                 if self.verbose:
-                    pbar_updates = {'dt':f"{self.proposal.dt:.4f}"}
+                    pbar_updates = {'dt':f"{self.proposal.dt:.4e}", 'acceptance rate': f"{self.acceptance:.3f}"}
                     progress_bar_tuning.set_postfix(pbar_updates)
                     progress_bar_tuning.update(1)
                 
@@ -111,9 +121,9 @@ class HamiltonianMonteCarlo:
         if self.verbose:
             progress_bar_sampling.close()
     
-        samples = np.array([x.values for x in chain])
+        samples = np.array([x.values() for x in chain])
         ACL = [acl(samples[:,i], c=5) for i in range(samples.shape[1])]
-#        print("autocorrelation lengths = {}".format(ACL))
+
         thinning = int(max(ACL))
         print("thinning = {}".format(thinning))
         self.save_output(samples[::thinning])
@@ -175,7 +185,7 @@ class HamiltonianProposal(Proposal):
         self.inverse_mass           = np.diag(self.inverse_mass_matrix)
         _, self.logdeterminant      = np.linalg.slogdet(self.mass_matrix)
 
-        self.dt                     = 1e-3*self.dimension**0.25
+        self.dt                     = 0.3e-3#*self.dimension**0.25
         self.leaps                  = 100
         self.maxleaps               = 1000
         self.DEBUG                  = 0
@@ -214,7 +224,7 @@ class HamiltonianProposal(Proposal):
         dV: :obj:`numpy.ndarray` gradient evaluated at q
         """
         g = self.gradient(q)
-        return np.array([g[n] for n in q.names])
+        return np.array([g[n] for n in q.keys()])
         
     def kinetic_energy(self,p):
         """
@@ -330,24 +340,33 @@ class NUTS(HamiltonianProposal):
         p = p0.copy()
         q = q0.copy()
 
-        # Update position q using momentum p
-        q.values += dt * p * self.inverse_mass
-
-        # Reflect q against bounds
-        lower_bounds, upper_bounds = np.array(self.prior_bounds).T
-        over_upper = q.values > upper_bounds
-        under_lower = q.values < lower_bounds
-
-        q.values = np.where(over_upper, 2 * upper_bounds - q.values, q.values)
-        q.values = np.where(under_lower, 2 * lower_bounds - q.values, q.values)
-
-        # Reflect momentum for out-of-bound coordinates
-        p = np.where(over_upper | under_lower, -p, p)
+        for j,k in enumerate(q.keys()):
+            q[k] += dt * p[j] * self.inverse_mass[j]
+            u, l  = self.prior_bounds[k][1], self.prior_bounds[k][0]
+            # check and reflect against the bounds
+            # of the allowed parameter range
+            while q[k] < l or q[k] > u:
+                if q[k] > u:
+                    q[k] = u - (q[k] - u)
+                    p[j] *= -1
+                if q[k] < l:
+                    q[k] = l + (l - q[k])
+                    p[j] *= -1
+#        # Reflect q against bounds
+#        lower_bounds, upper_bounds = np.array(self.prior_bounds).T
+#        over_upper = q.values() > upper_bounds
+#        under_lower = q.values() < lower_bounds
+#
+#        q.values() = np.where(over_upper, 2 * upper_bounds - q.values(), q.values)
+#        q.values() = np.where(under_lower, 2 * lower_bounds - q.values(), q.values)
+#
+#        # Reflect momentum for out-of-bound coordinates
+#        p = np.where(over_upper | under_lower, -p, p)
 
         # Update momentum using the force #WE ARE CARRYING OVER A MINUS SIGN!!!!
         F = self.force(q)
-        p += dt * F
-
+        p -= dt * F
+#        print("========> q = {} p = {} F = {}".format(q,p,F))
         return p, q, self.hamiltonian(p, q)
     
     def build_tree(self, p0, q0):
@@ -359,7 +378,7 @@ class NUTS(HamiltonianProposal):
         all_ps = []
         all_H = []
 
-        for _ in range(2 ** (maxdepth - 1)):
+        for depth in range(2 ** (maxdepth - 1)):
             # Randomly choose forward or backward direction
             v = 1 if self.rng.uniform() < 0.5 else -1
             dt = v * abs(self.dt)
@@ -376,15 +395,15 @@ class NUTS(HamiltonianProposal):
                 all_H.append(H_l)
 
             # Check for termination
-            delta = q_r.values - q_l.values
+            delta = np.array([np.abs(q_l[key] - q_r[key]) for key in q_l])
             if np.dot(delta, p_l) < 0 or np.dot(delta, p_r) < 0:
                 break
-
+#            print("depth =",depth)
         # Normalize weights and sample from trajectory
         H = np.array(all_H)
+#        print("H = {}".format(H))
         weights = np.exp(H - logsumexp(H))
         idx = self.rng.choice(len(H), p=weights)
-
         return -all_ps[idx], all_qs[idx], H[idx]
 
     def get_sample(self, q0):
@@ -403,12 +422,15 @@ class NUTS(HamiltonianProposal):
         """
         # generate a canonical momentum
         p0 = np.atleast_1d(self.momenta_distribution.rvs())
+#        print("mass matrix = {}".format(self.mass_matrix))
         initial_energy = self.hamiltonian(p0, q0)
+#        print("initial energy = {} p0 = {} q0 = {}".format(initial_energy,p0,q0))
         # evolve along the trajectory
         p, q, final_energy = self.build_tree(p0, q0)
+#        print("final energy = {} p = {} q = {}".format(final_energy,p,q))
         # minus sign from the definition of the potential
         self.log_J = min(0.0, initial_energy-final_energy)
-
+#        print("log_J = {}".format(self.log_J))
         return q
 
 class DualAveragingStepSize:
@@ -513,13 +535,13 @@ if __name__ == "__main__":
 
     
      
-    ray.init()
+#    ray.init()
     
     dimension = 20
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
-    n_threads  = 6
+    n_threads  = 1
     n_samps    = 1e5
     n_train    = 1e4
     e_train    = 1
@@ -529,17 +551,17 @@ if __name__ == "__main__":
     
     rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
-    M         = TestModel(names, bounds)
+    M         = GaussianMultiModal(names, bounds)
     Kernel    = NUTS
-    HMC       = [HamiltonianMonteCarlo.remote(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
+    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
     
-    samples   = ray.get([H.sample.remote(M.new_point(rng = rng[j]),
+    samples   = [H.sample(M.new_point(rng = rng[j]),
                           n=n_samps//n_threads,
                           t_epochs=e_train,
                           t=n_train,
                           mass_estimate = adapt_mass,
                           position=j)
-                 for j,H in enumerate(HMC)])
+                 for j,H in enumerate(HMC)]
     
     x = []
     for s in samples:
