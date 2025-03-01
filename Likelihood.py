@@ -1,5 +1,6 @@
 from astropy import constants as const
 M_sun = const.M_sun.value
+
 G = const.G.value
 c = const.c.value
 pc = const.pc.value
@@ -27,7 +28,7 @@ def TaylorF2(params, frequency_array):
     Mc = params[0]
     q  =0.7
    
-    distance = 1000
+    distance = 800
     iota = 0
     #q  = params[1]
    
@@ -312,17 +313,18 @@ class GWDetector:
         fcross = jnp.sin(z_)*(ampl12*jnp.cos(2*pol) - ampl11*jnp.sin(2*pol))
         
         return fplus, fcross
-    #@partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0,))
     def log_likelihood(self, params):
-        self.Frequency = jnp.linspace(10, 400, 1000)
+        self.Frequency = jnp.linspace(10, 500, 1000)
         #h = self.project_waveform(params)
 
-        inj_params = [ 30, 0.7, 0, np.log(1000)]
+        inj_params = [ 30,]
         self.FrequencySeries = self.project_waveform(inj_params,)
         h = self.project_waveform(params,)
         residuals = self.FrequencySeries - h
-        
-        return -self.TwoDeltaTOverN*jnp.vdot(residuals, residuals).real
+        psd = np.ones(len(self.Frequency))*1e-26
+       
+        return -self.TwoDeltaTOverN*jnp.vdot(residuals/psd, residuals/psd).real
     
 #    def potential(self, params):
 #    
@@ -382,10 +384,8 @@ if __name__ == '__main__':
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             '''
             return 0.0
-        
         def log_posterior(self, params):
             return self.log_prior(jnp.array(params)) + self.log_likelihood(jnp.array(params))
-        
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
             log_likelihoods = jnp.array([det.log_likelihood(params) for det in self.detectors])
@@ -394,7 +394,6 @@ if __name__ == '__main__':
             return jnp.sum(log_likelihoods)
         
 
-        
         def gradient(self, params):
             """
             we need to compute for each detector
@@ -409,13 +408,53 @@ if __name__ == '__main__':
             #print("posterior =",self.log_posterior(params.values))
             return g
      
+
+
+    import bilby 
+    class RapidPE_bilby(bilby.Likelihood):
+        
+        def __init__(self, ):
+            super().__init__(parameters = {'mc':None})
+        
+            detector_names = ['H1',]
+            self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
+        
+
+        
+        def log_likelihood(self):
+            params = [self.parameters['mc']]
+            #print(params)
+            return self.detectors[0].log_likelihood(params)
+        
+
+      
+    
+    '''
+    likelihood = RapidPE_bilby()
+    priors = dict(
+        mc=bilby.core.prior.Uniform(10, 50, "mc"),)
+
+    result = bilby.run_sampler(
+    likelihood=likelihood,
+    priors=priors,
+    sampler="dynesty",
+    nlive=100,
+    outdir='dynesty',
+    label='prova',
+)
+    result.plot_corner()
+
+   
+
+
+
+    sys.exit()
+    '''
+        
 #    ray.init()
     default_names = [
                           'mc',]
-                        #  'q',
-                        #  'costheta_jn',
-                        #  'logdistance']
-    # default parameters' names
+
     '''
     default_names = ['phiref',
                           'ra',
@@ -430,11 +469,10 @@ if __name__ == '__main__':
     '''
 
 
-    #plt.plot(np.linspace(10, 200, 1000),np.real(TaylorF2([-60, 0.28, -0.03, 4],np.linspace(10, 200, 1000)))[0])
-    #plt.show()
+
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
-    default_bounds = {'mc'          : [10.0,40.0],}
+    default_bounds = {'mc'          : [29.8,30.2],}
                           # 'q'           : [0.125,1.0],
                           # 'costheta_jn' : [-1.0,1.0],
                          
@@ -444,8 +482,8 @@ if __name__ == '__main__':
 
     
     n_threads  = 1
-    n_samps    = 1e3
-    n_train    = 1e3
+    n_samps    = 1e5
+    n_train    = 1e4
     e_train    = 1
     adapt_mass = 0
     verbose    = 1

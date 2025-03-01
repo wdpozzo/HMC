@@ -1,5 +1,6 @@
 import numpy as np
 #import numpy
+from raynest.nest2pos import autocorrelation, acl
 import ray
 from raynest.proposal import Proposal
 from scipy.stats import multivariate_normal
@@ -335,16 +336,16 @@ class NUTS(HamiltonianProposal):
 
   # Reflect q against bounds
         lower_bounds, upper_bounds = np.array(self.prior_bounds).T
-        print('lower bounds', lower_bounds)
-        print('upper_bounds', upper_bounds)
+        #print('lower bounds', lower_bounds)
+        #print('upper_bounds', upper_bounds)
         over_upper = q.values > upper_bounds
         under_lower = q.values < lower_bounds
-        print('before_reflection', q.values)
-        print('over upper', over_upper,)
-        print('under_lower', under_lower)
+        #print('before_reflection', q.values)
+        #print('over upper', over_upper,)
+        #print('under_lower', under_lower)
         q.values = np.where(over_upper,  upper_bounds - (q.values-upper_bounds), q.values)
         q.values = np.where(under_lower,  lower_bounds +(lower_bounds-q.values), q.values)
-        print("after reflection", q.values)
+        #print("after reflection", q.values)
         #print("\n")
 
         # Reflect momentum for out-of-bound coordinates
