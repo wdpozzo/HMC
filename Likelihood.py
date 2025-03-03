@@ -1,6 +1,6 @@
 from astropy import constants as const
 M_sun = const.M_sun.value
-
+import scipy
 G = const.G.value
 c = const.c.value
 pc = const.pc.value
@@ -20,15 +20,16 @@ from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
 
 from hmc import HamiltonianMonteCarlo, NUTS
-@jax.jit
+partial(jax.jit, static_argnums=(1,))
 def TaylorF2(params, frequency_array):
 
                                    
     
     Mc = params[0]
-    q  =0.7
+    q  = 0.7
    
-    distance = 800
+    distance = jnp.exp(params[1])
+    #distance = 150
     iota = 0
     #q  = params[1]
    
@@ -50,16 +51,17 @@ def TaylorF2(params, frequency_array):
     #print(v)
     v = v/c
     
-    v_lso = (G*jnp.pi*M*f_lso)**(1/3)
-    v_lso = v_lso /c
+    
+    #v_lso = (G*jnp.pi*M*f_lso)**(1/3)
+    #v_lso = v_lso /c
     
     
     gamma  = jnp.euler_gamma
 
     
     amp =(jnp.pi**(-2/3))*jnp.sqrt(5/24)*(G*Mc/(c**3))**(5/6)*frequency_array**(-7/6)*(c/r)###questo è ok
-    phi_plus=  ((3)/(128*nu*(v)**5))*(1
-    
+    phi_plus=  ((3)/(128*nu*(v)**5))*(1)
+    '''
     +
     #0PN
     v**2*(20/9)*(743/336 + nu*11/4)
@@ -79,7 +81,7 @@ def TaylorF2(params, frequency_array):
     #3PN
     v**(7)*jnp.pi*(77096675/254016 +nu*378515/1512 -(nu**2)*74045/756))
 
-
+    '''
     phi_plus += jnp.pi- jnp.pi/4
 
 
@@ -258,7 +260,7 @@ class GWDetector:
 
     '''
 
-
+    partial(jax.jit, static_argnums=(0,))
     def project_waveform(self, params):
         
         h_plus, h_cross = TaylorF2(params, self.Frequency)
@@ -318,11 +320,12 @@ class GWDetector:
         self.Frequency = jnp.linspace(10, 500, 1000)
         #h = self.project_waveform(params)
 
-        inj_params = [ 30,]
+        inj_params = [ 30,np.log(150)]
+        #inj_params = [ 30, ]
         self.FrequencySeries = self.project_waveform(inj_params,)
         h = self.project_waveform(params,)
         residuals = self.FrequencySeries - h
-        psd = np.ones(len(self.Frequency))*1e-26
+        psd = jnp.ones(len(self.Frequency))*1e-24
        
         return -self.TwoDeltaTOverN*jnp.vdot(residuals/psd, residuals/psd).real
     
@@ -384,8 +387,11 @@ if __name__ == '__main__':
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             '''
             return 0.0
+        @partial(jax.jit, static_argnums=(0,))
         def log_posterior(self, params):
-            return self.log_prior(jnp.array(params)) + self.log_likelihood(jnp.array(params))
+            return self.log_prior(jnp.array(params)) + self.log_likelihood(jnp.array(params)) 
+        
+        @partial(jax.jit, static_argnums=(0,))
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
             log_likelihoods = jnp.array([det.log_likelihood(params) for det in self.detectors])
@@ -393,7 +399,7 @@ if __name__ == '__main__':
             # Then use jnp.sum
             return jnp.sum(log_likelihoods)
         
-
+        #@partial(jax.jit, static_argnums=(0,))
         def gradient(self, params):
             """
             we need to compute for each detector
@@ -403,10 +409,10 @@ if __name__ == '__main__':
             #params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
            # g      = grad(lambda p: self.log_posterior(p))(params)
             g = jax.grad(self.log_posterior)(params.values)
-            #"parameter =",params)
+            print("parameter =",params)
             #print("gradient =",g)
             #print("posterior =",self.log_posterior(params.values))
-            return g
+            return np.array(g)
      
 
 
@@ -414,7 +420,7 @@ if __name__ == '__main__':
     class RapidPE_bilby(bilby.Likelihood):
         
         def __init__(self, ):
-            super().__init__(parameters = {'mc':None})
+            super().__init__(parameters = {'mc':None, 'logdistance':None,})
         
             detector_names = ['H1',]
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
@@ -422,24 +428,43 @@ if __name__ == '__main__':
 
         
         def log_likelihood(self):
-            params = [self.parameters['mc']]
+            params = [self.parameters['mu'], self.parameters['logdistance']]
             #print(params)
             return self.detectors[0].log_likelihood(params)
         
 
-      
+
+    class Gaussian_bilby(bilby.Likelihood):
+        
+        def __init__(self, ):
+            super().__init__(parameters = {'mu':None, })
+        
+        
+
+        
+        def log_likelihood(self):
+            mu= self.parameters['mu']
+            #print(params)
+            return scipy.stats.norm.logpdf(mu, )
+        
+
+
     
+
+      
     '''
-    likelihood = RapidPE_bilby()
+    
+    likelihood =RapidPE_bilby()
     priors = dict(
-        mc=bilby.core.prior.Uniform(10, 50, "mc"),)
+        mu=bilby.core.prior.Uniform(28, 32, "mc"),
+        logdistance  = bilby.core.prior.Uniform(jnp.log(10.0),jnp.log(300.0), "logdistance"),)
 
     result = bilby.run_sampler(
     likelihood=likelihood,
     priors=priors,
     sampler="dynesty",
-    nlive=100,
-    outdir='dynesty',
+    nlive=500,
+    outdir='dynesty2d',
     label='prova',
 )
     result.plot_corner()
@@ -449,11 +474,11 @@ if __name__ == '__main__':
 
 
     sys.exit()
+    
     '''
-        
 #    ray.init()
-    default_names = [
-                          'mc',]
+    default_names = ['mc', 'logdistance']
+    #default_names  = ['mc']
 
     '''
     default_names = ['phiref',
@@ -472,18 +497,19 @@ if __name__ == '__main__':
 
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
-    default_bounds = {'mc'          : [29.8,30.2],}
-                          # 'q'           : [0.125,1.0],
+    default_bounds = {'mc'          : [25, 35],
+                         
+                          # 'q'           : [0.125,1],}
                           # 'costheta_jn' : [-1.0,1.0],
                          
-                          # 'logdistance' : [jnp.log(10.0),jnp.log(2000.0)]}
+                         'logdistance' : [jnp.log(10.0),jnp.log(500.0)]}
     
 
 
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
+    n_samps    =5e4
+    n_train    = 5e3
     e_train    = 1
     adapt_mass = 0
     verbose    = 1
@@ -518,5 +544,5 @@ if __name__ == '__main__':
                      quantiles=[0.05, 0.5, 0.95], truths = None,
                      show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
-    plt.savefig("corner.pdf",bbox_inches='tight')
+    plt.savefig("corner2d.pdf",bbox_inches='tight')
     

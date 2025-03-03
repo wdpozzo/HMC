@@ -1,6 +1,7 @@
 import numpy as np
 #import numpy
 from raynest.nest2pos import autocorrelation, acl
+
 import ray
 from raynest.proposal import Proposal
 from scipy.stats import multivariate_normal
@@ -38,7 +39,7 @@ class HamiltonianMonteCarlo:
         self.max_storage        = max_storage
         self.samples            = deque(maxlen = self.max_storage) # the list of samples from the mcmc chain
         
-        self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
+        self.mass_matrix = np.diag(np.ones(len(self.model.bounds)))#/np.abs(self.bounds[1]-self.bounds[0])
         self.proposal = proposal(self.model, self.rng, self.mass_matrix)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.proposal.dt)
 
@@ -113,7 +114,7 @@ class HamiltonianMonteCarlo:
             progress_bar_sampling.close()
     
         samples = np.array([x.values for x in chain])
-        ACL = [acl(samples[:,i], c=5) for i in range(samples.shape[1])]
+        ACL = [acl(samples[:,i], c=1) for i in range(samples.shape[1])]
 #        print("autocorrelation lengths = {}".format(ACL))
         thinning = int(max(ACL))
         print("thinning = {}".format(thinning))
@@ -215,7 +216,7 @@ class HamiltonianProposal(Proposal):
         dV: :obj:`numpy.ndarray` gradient evaluated at q
         """
         g = self.gradient(q)
-        return np.array(g)#np.array([g[n] for n in q.names])
+        return g#np.array([g[n] for n in q.names])
         
     def kinetic_energy(self,p):
         """
@@ -246,84 +247,7 @@ class HamiltonianProposal(Proposal):
         """
         return self.T(p) + self.V(q)
 
-class LeapFrog(HamiltonianProposal):
-    """
-    Leap frog integrator proposal for an unconstrained
-    Hamiltonian Monte Carlo step
-    """
-    def get_sample(self, q0, *args):
-        """
-        Propose a new sample, starting at q0
 
-        Parameters
-        ----------
-        q0 : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        q: :obj:`raynest.parameter.LivePoint`
-            position
-        """
-        # generate a canonical momentum
-        p0 = np.atleast_1d(self.momenta_distribution.rvs())
-        initial_energy = self.hamiltonian(p0,q0)
-        # evolve along the trajectory
-        q, p, r = self.evolve_trajectory(p0, q0, *args)
-        # minus sign from the definition of the potential
-        final_energy   = self.hamiltonian(p, q)
-        if r == 1:
-            self.log_J = -np.inf
-        else:
-            self.log_J = min(0.0, initial_energy-final_energy)
-        return q
-
-    def evolve_trajectory(self, p0, q0, *args):
-        """
-        Hamiltonian leap frog trajectory subject to the
-        hard boundary defined by the parameters prior bounds.
-        https://arxiv.org/pdf/1206.1901.pdf
-
-        Parameters
-        ----------
-        p0 : :obj:`numpy.ndarray`
-            momentum
-        q0 : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        p: :obj:`numpy.ndarray` updated momentum vector
-        q: :obj:`raynest.parameter.LivePoint`
-            position
-        """
-        # Updating the momentum a half-step
-        p = p0 - 0.5 * self.dt * self.force(q0)
-        q = q0.copy()
-        
-        for i in range(self.leaps):
-
-            # do a step
-            for j,k in enumerate(q.names):
-                u,l = self.prior_bounds[j][1], self.prior_bounds[j][0]
-                q[k] += self.dt * p[j] * self.inverse_mass[j]
-                # check and reflect against the bounds
-                # of the allowed parameter range
-                while q[k] <= l or q[k] >= u:
-                    if q[k] > u:
-                        q[k] = u - (q[k] - u)
-                        p[j] *= -1
-                    if q[k] < l:
-                        q[k] = l + (l - q[k])
-                        p[j] *= -1
-
-            F = self.force(q)
-            # take a full momentum step
-            p += - self.dt * F
-        # Do a final update of the momentum for a half step
-        p += - 0.5 * self.dt * F
-
-        return q, -p, 0
 
 class NUTS(HamiltonianProposal):
     
@@ -331,31 +255,28 @@ class NUTS(HamiltonianProposal):
         p = p0.copy()
         q = q0.copy()
 
+        p = p0  - 0.5 * self.dt * self.force(q0)
+        q = q0.copy()
+
         # Update position q using momentum p
         q.values += dt * p * self.inverse_mass
 
-  # Reflect q against bounds
+        # Reflect q against bounds
         lower_bounds, upper_bounds = np.array(self.prior_bounds).T
-        #print('lower bounds', lower_bounds)
-        #print('upper_bounds', upper_bounds)
         over_upper = q.values > upper_bounds
         under_lower = q.values < lower_bounds
-        #print('before_reflection', q.values)
-        #print('over upper', over_upper,)
-        #print('under_lower', under_lower)
-        q.values = np.where(over_upper,  upper_bounds - (q.values-upper_bounds), q.values)
-        q.values = np.where(under_lower,  lower_bounds +(lower_bounds-q.values), q.values)
-        #print("after reflection", q.values)
-        #print("\n")
+
+        q.values = np.where(over_upper, 2 * upper_bounds - q.values, q.values)
+        q.values = np.where(under_lower, 2 * lower_bounds - q.values, q.values)
 
         # Reflect momentum for out-of-bound coordinates
         p = np.where(over_upper | under_lower, -p, p)
 
         # Update momentum using the force #WE ARE CARRYING OVER A MINUS SIGN!!!!
         F = self.force(q)
-        p += dt * F
+        p -= dt * F
 
-        return p, q, self.hamiltonian(p, q)
+        return -p, q, self.hamiltonian(p, q)
     
     def build_tree(self, p0, q0):
         maxdepth = 10
@@ -458,8 +379,7 @@ if __name__ == "__main__":
     import jax.numpy as jnp
     from jax import grad
     from functools import partial
-
-
+    
     class TestModel(Model):
         
         def __init__(self, n, b):
@@ -470,7 +390,7 @@ if __name__ == "__main__":
             return 0.0
         
         def log_likelihood(self, q):
-            return -0.5*np.sum(q.values**2)
+            return -np.sum(0.5*q.values**2)
         
         def log_posterior(self, q):
             return self.log_prior(q)+self.log_likelihood(q)
@@ -496,49 +416,84 @@ if __name__ == "__main__":
             
             input =jnp.array([q])
             mean = jnp.array([4., 4.])
-            #return jnp.log((jnp.exp(-jnp.sum(input**2))))#+ (jnp.exp(-jnp.sum((mean-input)**2))))
-            return -0.5*jnp.sum(input**2)
+            return jnp.log((1/(20000))*(jnp.exp(-jnp.sum(input**2)/(2))))
+           
+            #return -jnp.sum((input)**2)  
+        
         
         def log_likelihood(self, q):
  
             mean = jnp.array([4., 4.])
             input = q.values
+            
             return self.gauss_func(input)
+        
+            
            
         
         def log_posterior(self, q):
             return self.log_prior(q)+self.log_likelihood(q)
+        
 
         def potential(self, q):
             return -self.log_posterior(q)
         
         def gradient(self, q):
-            #grad1 = grad(self.gauss_func)
+            grad1 = grad(self.gauss_func)
             x = q.values
-            #return np.array(grad1(x))
-            return -q.values
+            print(self.log_posterior(q))
+            return np.array(grad1(x))
         
+
+    class Rosenbrock(Model):
+        def __init__(self, n, b):
+            self.names  = n
+            self.bounds = b
+        def log_prior(self, q):
+            return 0.
+      
+        def log_likelihood(self, q):
+
+            x1, x2 = q.values
+            return -(100*(x2-x1**2)**2 +(x1-1)**2)
+
+        def log_posterior(self, q):
+            return self.log_prior(q)+self.log_likelihood(q)
+        
+        def potential(self, q):
+            return -self.log_posterior(q)
+        
+        def gradient(self, q):
+            
+            
+            '''
+            https://math.stackexchange.com/questions/4464953/partial-derivatives-of-the-multidimensional-rosenbrock-function
+            '''
+            x1, x2 = q.values
+            print(x1, x2)
+            #rosenbrock_grad = jacrev(self.log_likelihood)
+            return np.array([400*x1*(x2-x1**2) -2*(x1-1),-200*(x2-x1**2)])
 
 
     
      
-    #ray.init()
+    ray.init()
     
     dimension = 2
     names = ["{}".format(i) for i in range(dimension)]
-    bounds = [[-5,5] for _ in names]
+    bounds = [[-10,10] for _ in names]
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
+    n_samps    = 1e6
+    n_train    = 1e5
     e_train    = 1
-    adapt_mass = 1
+    adapt_mass = 0
     verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
     
-    rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
+    rng       = [np.random.default_rng(1111+np.random.randint(5)) for j in range(n_threads)]
 
-    M         = TestModel(names, bounds)
+    M         = Rosenbrock(names, bounds)
     Kernel    = NUTS
     HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
     
