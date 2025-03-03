@@ -1,4 +1,4 @@
-/dynesty*
+dynesty*/
 *.h5
 *.ipynb
 *.pdf
