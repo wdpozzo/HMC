@@ -57,8 +57,6 @@ def _GPS2JD(gpstime):
 
     return jd
 
-
-
 def TimeDelayFromEarthCenter( lat, lon,  ra,dec,GPS_time,):
   
     # Constants

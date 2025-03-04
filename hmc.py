@@ -52,11 +52,12 @@ class NUTS:
             self.mass_matrix = mass_matrix
         
         self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
-        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix)
+        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
+        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix, seed = self.rng)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
 
     def kinetic_energy(self, p):
-        return 0.5*np.dot(p.T,np.dot(self.inverse_mass_matrix,p))
+        return -0.5*np.dot(p.T,np.dot(self.inverse_mass_matrix,p))-0.5*self.logdet + 0.5*len(p)*np.log(2*np.pi)
         
     def sample(self, q0, N=1000, position=0):
     
@@ -208,7 +209,7 @@ class NUTS:
 
 class DualAveragingStepSize:
     
-    def __init__(self, initial_step_size, target_accept=0.65, gamma=0.05, t0=10.0, kappa=0.75):
+    def __init__(self, initial_step_size, target_accept=0.5, gamma=0.05, t0=10.0, kappa=0.75):
     
         self.mu = np.log(10 * initial_step_size)  # proposals are biased upwards to stay away from 0.
         self.target_accept = target_accept

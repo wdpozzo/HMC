@@ -297,10 +297,14 @@ if __name__ == '__main__':
     
     class RapidPE:
         
-        def __init__(self, n, b, detector_names):
+        def __init__(self, n, b, detector_names, trigtime, sampling_rate):
+            
             self.names  = n
             self.bounds = b
-            self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
+            self.detectors = [GWDetector(det, channel = "GWOSC",
+                                         trigtime = trigtime,
+                                         sampling_rate = sampling_rate)
+                                         for det in detector_names]
             self.gradient_function = jax.grad(self.log_posterior)
             
         def new_point(self, rng = None):
@@ -406,7 +410,7 @@ if __name__ == '__main__':
     default_bounds = {'phiref'      : [0.0,2.0*jnp.pi],
                       'ra'          : [0.0,2.0*jnp.pi],
                       'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-                      'tc'          : [trigtime-0.05,trigtime+0.05],
+                      'tc'          : [trigtime-0.5,trigtime+0.5],
                       'mc'          : [5.0,40.0],
                       'q'           : [0.125,1.0],
                       'costheta_jn' : [-1.0,1.0],
@@ -423,7 +427,8 @@ if __name__ == '__main__':
     
     rng         = [np.random.default_rng(111+j) for j in range(n_threads)]
 
-    M           = RapidPE(default_names, default_bounds, ["H1","L1"])
+    M           = RapidPE(default_names, default_bounds, ["H1","L1"],
+                          trigtime = trigtime, sampling_rate = 512. )
     mass_matrix = np.eye(len(default_names))
     
     stds = {'phiref'      : 3.13522148e+00,
@@ -472,30 +477,33 @@ if __name__ == '__main__':
         -3.59460134e-04,  2.77549823e-02,  3.02205777e-03,
         -3.23932733e-02,  5.67334552e-03,  5.28601392e-02]]))
 
-    Kernel    = NUTS
-    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 1e-5) for j in range(n_threads)]
+    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 5e-3) for j in range(n_threads)]
     
     starting_point = np.array([np.float64(2.970836395983002), np.float64(2.1457700661243417), np.float64(-1.1216815578621249), np.float64(1126259462.4088995), np.float64(32.82289012101475), np.float64(0.8628497064389393), np.float64(-0.4819802030544022), np.float64(1.5720689487945567), np.float64(6.295442867400122)])
     
-    samples = [H.sample(starting_point,
+    samples = np.concatenate([H.sample(starting_point,
                           N=int(n_samps//n_threads),
                           position=j)
-                 for j,H in enumerate(HMC)]
+                 for j,H in enumerate(HMC)])
     
+    print(samples.shape)
     import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    for i in range(len(default_names)):
+        ax = fig.add_subplot(len(default_names),1,i+1)
+        ax.plot(samples[:,i],'o-',markersize=2)
+        ax.set_ylabel(default_names[i])
+    plt.savefig("trace.pdf",bbox_inches='tight')
+    
     from corner import corner
-    corner(samples[0],
+    corner(samples,
            labels=default_names,
            quantiles=[0.05, 0.5, 0.95], truths = None,
            show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
     
-    fig = plt.figure()
-    for i in range(len(default_names)):
-        ax = fig.add_subplot(len(default_names),1,i+1)
-        ax.plot(samples[0][:,i],'o-',markersize=2)
-        ax.set_ylabel(default_names[i])
-    plt.savefig("trace.pdf",bbox_inches='tight')
+
     
 
