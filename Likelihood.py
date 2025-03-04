@@ -18,75 +18,70 @@ from utils import TimeDelayFromEarthCenter
 from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
 
-from hmc import HamiltonianMonteCarlo, NUTS
+from hmc import NUTS
 
+from jax import jit
+
+@jit
 def TaylorF2(params, frequency_array):
-    
-    Mc = params["mc"]
-    q  = params["q"]
-    phi_c = params["phiref"],
-    distance = jnp.exp(params["logdistance"])
-    iota = jnp.arccos(params["costheta_jn"])
-    
-    nu = q/((1+q)**2)
-    f_max = frequency_array[-1]
+    # Extract parameters
+    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
 
-    r = distance
-    #print(pc)
-    Mc = Mc*M_sun
-    r = r*pc*1e6#megaparsec
-    M = Mc/(nu**(3/5))
+    # Compute mass and distance-related terms
+    distance = jnp.exp(logdistance)
+    iota = jnp.arccos(costheta_jn)
+    nu = q / ((1 + q) ** 2)
 
-    f_lso =f_max/2
-    #nu = m1*m2/(m1+m2)**2
-    v = (G*jnp.pi*M*frequency_array)**(1/3)
-    #print(v)
-    v = v/c
-    
-    v_lso = (G*jnp.pi*M*f_lso)**(1/3)
-    v_lso = v_lso /c
-    
-    
-    gamma  = jnp.euler_gamma
+    Mc *= M_sun
+    r = distance * pc * 1e6  # Convert to Megaparsec
 
-    
-    amp =(jnp.pi**(-2/3))*jnp.sqrt(5/24)*(G*Mc/(c**3))**(5/6)*frequency_array**(-7/6)*(c/r)###questo è ok
-    phi_plus=  ((3)/(128*nu*(v)**5))*(1
-    
-    +
-    #0PN
-    v**2*(20/9)*(743/336 + nu*11/4)
-    -\
-    #1PN
-    16*jnp.pi*v**3+ \
-    #1.5PN
-    10*(v**4)*(3058673/1016064 +nu*5429/1008+(nu**2)*617/144)
-    +\
-    #2PN
-    v**(5)*jnp.pi*(38645/756-nu*65/9)*(1+3*jnp.log(v))
-    +\
-    #2.5PN
-    (v**6)*(11583231236531/4694215680 -jnp.pi**2*640/3 -6848*gamma/21 - 6848/21*jnp.log(4*v)+\
+    M = Mc / (nu ** (3 / 5))
+    f_lso = frequency_array[-1] / 2
 
-    nu*(-15737765635/3048192+ 2255*(jnp.pi**2)/12)+nu**2*76055/1728 -nu**3*127825/1296)+\
-    #3PN
-    v**(7)*jnp.pi*(77096675/254016 +nu*378515/1512 -(nu**2)*74045/756))
+    # Precompute terms
+    pi_M = G * jnp.pi * M
+    v = jnp.power(pi_M * frequency_array, 1/3) / c
+    v_lso = jnp.power(pi_M * f_lso, 1/3) / c
+    gamma = jnp.euler_gamma
 
+    # Compute amplitude
+    amp = jnp.power(jnp.pi, -2/3) * jnp.sqrt(5/24) * jnp.power(G * Mc / c**3, 5/6) \
+          * jnp.power(frequency_array, -7/6) * (c / r)
 
-    phi_plus += jnp.pi- jnp.pi/4
+    # Compute phase terms (factorized and precomputed where possible)
+    v2 = v**2
+    v3 = v**3
+    v4 = v**4
+    v5 = v**5
+    v6 = v**6
+    v7 = v**7
+    log_v = jnp.log(v)
 
+    phi_plus = (3 / (128 * nu * v**5)) * (1 +
+        v2 * (20/9) * (743/336 + nu * 11/4) -
+        v3 * (16 * jnp.pi) +
+        v4 * (10 * (3058673/1016064 + nu * 5429/1008 + (nu**2) * 617/144)) +
+        v5 * jnp.pi * (38645/756 - nu * 65/9) * (1 + 3 * log_v) +
+        v6 * (11583231236531/4694215680 - jnp.pi**2 * 640/3 - 6848 * gamma/21 - 6848/21 * log_v +
+              nu * (-15737765635/3048192 + 2255 * (jnp.pi**2) / 12) + nu**2 * 76055/1728 - nu**3 * 127825/1296) +
+        v7 * jnp.pi * (77096675/254016 + nu * 378515/1512 - nu**2 * 74045/756)
+    )
 
-    phi_cross = phi_plus  + jnp.pi/2
-    #phi= jnp.exp(1j*(-(phi_c) + 2*jnp.pi*frequency_array*t_c ))
-    phi= jnp.exp(1j*(-(params["phiref"])))
-    h_plus = phi*amp*((1+(jnp.cos(iota))**2)/2)*jnp.exp(1j*phi_plus)
-    h_cross = phi*amp*jnp.cos(iota)*jnp.exp(1j*phi_cross)
-    '''
-    f_tot =jnp.arange(0, f_max, delta_f)
-    h_pad = jnp.zeros(len(f_tot)-len(f))
-    h_plus = jnp.concatenate((h_pad, h_plus))
-    h_cross = jnp.concatenate((h_pad, h_cross))
-    '''
+    phi_plus += jnp.pi - jnp.pi / 4
+    phi_cross = phi_plus + jnp.pi / 2
+
+    # Compute phase factor
+    phase_factor = jnp.exp(-1j * phi_c)
+    exp_phi_plus = jnp.exp(1j * phi_plus)
+    exp_phi_cross = jnp.exp(1j * phi_cross)
+
+    # Compute strain polarizations
+    cos_iota = jnp.cos(iota)
+    cos_iota_sq = cos_iota**2
+
+    h_plus = phase_factor * amp * ((1 + cos_iota_sq) / 2) * exp_phi_plus
+    h_cross = phase_factor * amp * cos_iota * exp_phi_cross
+
     return h_plus, h_cross
 
 class GWDetector:
@@ -197,6 +192,7 @@ class GWDetector:
         self.zeta = self.available_detectors[name][3]
         
     @staticmethod
+    @jit
     def _ab_factors(g_, lat, ra, dec, lst):
         """
         Method that calculates the amplitude factors of plus and cross
@@ -229,31 +225,15 @@ class GWDetector:
 
 
         return a_, b_
-    '''
-    def TimeDelayFromEarthCenter():
-    
-        ehat_src = np.zeros(3)
-        greenwich_hour_angle = GreenwichMeanSiderealTime(params["tc"]) - ra
-
-        ehat_src[0] = np.cos(dec) * np.cos(greenwich_hour_angle)
-        ehat_src[1] = np.cos(dec) * -np.sin(greenwich_hour_angle)
-        ehat_src[2] = np.sin(dec)
-        time_delay = 0.0
-        for i in range(3):
-            time_delay += - ehat_src[i] * detector_location[i]
-        return time_delay / c
-
-    '''
-
 
     def project_waveform(self, params):
-    
+            #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         h_plus, h_cross = TaylorF2(params, self.Frequency)
         #gmst = np.radians(self.lst_estimate(GPS_time))
         fplus, fcross   = self.antenna_pattern_functions(params)
         
 
-        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params['ra'], params['dec'], params['tc'])
+        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params[1], params[2], params[3])
         timeshift       = timedelay
         shift           = 2.0*np.pi*self.Frequency*timeshift
 
@@ -262,6 +242,7 @@ class GWDetector:
 
     def antenna_pattern_functions(self, params):
         '''
+        #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         Evaluate the antenna pattern functions.
 
         :param right_ascension: float
@@ -280,14 +261,14 @@ class GWDetector:
             fplus and fcross.
         '''
 
-        ra = params["ra"]#np.radians(right_ascension)
-        dec = params["dec"]#np.radians(declination)
+        ra = params[1]#np.radians(right_ascension)
+        dec = params[2]#np.radians(declination)
 
-        pol = params["psi"]#np.radians(polarization)
+        pol = params[7]#np.radians(polarization)
         lat = jnp.radians(self.latitude)
         g_ = jnp.radians(self.gamma)
         z_ = jnp.radians(self.zeta)
-        gmst = jnp.mod(GreenwichMeanSiderealTime(params["tc"]), 2*jnp.pi)
+        gmst = jnp.mod(GreenwichMeanSiderealTime(params[3]), 2*jnp.pi)
         lst = gmst + jnp.radians(self.longitude)
         ampl11, ampl12 = self._ab_factors(g_, lat, ra, dec, lst)
 
@@ -305,28 +286,6 @@ class GWDetector:
         
         return -self.TwoDeltaTOverN*jnp.vdot(residuals, residuals/self.sigmasq).real
     
-#    def potential(self, params):
-#    
-#        return -self.log_posterior(params)
-#    
-#    def log_prior(self, params):
-#    
-#        logP = 0.0
-#        logP += 3.0*params['logdistance']
-#
-#        # declination
-#        logP += np.log(np.abs(np.cos(params['dec'])))
-#
-#        # chirp mass and mass ratio
-#        mc      = params['mc']
-#        q       = params['q']
-#        logP += np.log(mc)
-#        logP += (2./5.)*np.log(1.0+q)-(6./5.)*np.log(q)
-#        return logP
-#    
-#    def log_posterior(self, params):
-#        return self.log_prior(params) + self.log_likelihood(params)
-    
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import jax
@@ -342,14 +301,15 @@ if __name__ == '__main__':
             self.names  = n
             self.bounds = b
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
-        
+            self.gradient_function = jax.grad(self.log_posterior)
+            
         def new_point(self, rng = None):
             """
-            Create a new LivePoint, drawn from within bounds
+            Create a new point, drawn from within bounds
 
             -----------
             Return:
-                p: :obj:`raynest.parameter.LivePoint`
+                p: :obj:`np.ndarray`
             """
             
             if rng is None:
@@ -359,21 +319,23 @@ if __name__ == '__main__':
             logP = -np.inf
             
             while(logP==-np.inf):
-                p = {n:generator(self.bounds[n][0], self.bounds[n][1]) for n in self.names}
+                p = np.array([generator(self.bounds[n][0], self.bounds[n][1]) for n in self.names])
                 logP=self.log_prior(p)
+            
             return p
         
         def log_prior(self, params):
+        #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         
             logP = 0.0
-            logP += 3.0*params['logdistance']
+            logP += 3.0*params[8]
 
             # declination
-            logP += jnp.log(jnp.abs(jnp.cos(params['dec'])))
+            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
 
             # chirp mass and mass ratio
-            mc      = params['mc']
-            q       = params['q']
+            mc      = params[4]
+            q       = params[5]
             logP   += jnp.log(mc)
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             return logP
@@ -398,12 +360,8 @@ if __name__ == '__main__':
             return all(self.bounds[n][0] < param[n] < self.bounds[n][1] for n in param.keys())
         
         def log_posterior(self, params):
-#            print("prior=",self.log_prior(params),"likelihood=",self.log_likelihood(params))
-            if not(self.in_bounds(params)):
-                print("out of bounds")
-                return -np.inf
             
-            return self.log_prior(params) + self.log_likelihood(params)
+            return self.log_likelihood(params) + self.log_prior(params)
         
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
@@ -421,92 +379,94 @@ if __name__ == '__main__':
             
             sum_f (2/PSD) Re (h grad h^*) 
             """
-            params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
-            g      = grad(lambda p: self.log_posterior(p))(params)
-            #g = jax.grad(self.log_posterior)(params.values)
-            #print("parameter =",params)
-            #print("gradient =",g)
-            #print("posterior =",self.log_posterior(params))
-            return g
+#            params = tree_map(lambda x: jnp.asarray(x, dtype=jnp.float64), dict(params))
+#            g      = grad(lambda p: self.log_posterior(p))(params)
+#            #g = jax.grad(self.log_posterior)(params.values)
+#            #print("parameter =",params)
+#            #print("gradient =",g)
+#            #print("posterior =",self.log_posterior(params))
+#            return g
+            return self.gradient_function(params)
      
 #    ray.init()
 
     # default parameters' names
     default_names = ['phiref',
-                          'ra',
-                          'dec',
-                          'tc',
-                          'mc',
-                          'q',
-                          'costheta_jn',
-                          'psi',
-                          'logdistance']
+                     'ra',
+                     'dec',
+                     'tc',
+                     'mc',
+                     'q',
+                     'costheta_jn',
+                     'psi',
+                     'logdistance']
 
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
     default_bounds = {'phiref'      : [0.0,2.0*jnp.pi],
-                           'ra'          : [0.0,2.0*jnp.pi],
-                           'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-                           'tc'          : [trigtime-0.05,trigtime+0.05],
-                           'mc'          : [5.0,40.0],
-                           'q'           : [0.125,1.0],
-                           'costheta_jn' : [-1.0,1.0],
-                           'psi'         : [0.0,jnp.pi],
-                           'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
+                      'ra'          : [0.0,2.0*jnp.pi],
+                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
+                      'tc'          : [trigtime-0.05,trigtime+0.05],
+                      'mc'          : [5.0,40.0],
+                      'q'           : [0.125,1.0],
+                      'costheta_jn' : [-1.0,1.0],
+                      'psi'         : [0.0,jnp.pi],
+                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
     
     n_threads  = 1
-    n_samps    = 1e3
+    n_samps    = 1e4
     n_train    = 1e3
     e_train    = 0
     adapt_mass = 0
     verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
     
-    rng         = [np.random.default_rng(1111+j) for j in range(n_threads)]
+    rng         = [np.random.default_rng(111+j) for j in range(n_threads)]
 
     M           = RapidPE(default_names, default_bounds, ["H1","L1"])
     mass_matrix = np.eye(len(default_names))
     
-    stds = {'phiref'      : 0.1,
-           'ra'          : 0.1,
-           'dec'         : 0.1,
-           'tc'          : 0.01,
-           'mc'          : 1.0,
-           'q'           : 0.3,
-           'costheta_jn' : 0.2,
-           'psi'         : 0.2,
-           'logdistance' : 1}
-    
+    stds = {'phiref'      : 3.13522148e+00,
+           'ra'          : 2.23478705e-01,
+           'dec'         : 2.69487404e-02,
+           'tc'          : 9.11720777e-06,
+           'mc'          : 7.53807316e-01,
+           'q'           : 8.31115736e-03,
+           'costheta_jn' : 4.63256737e-01,
+           'psi'         : 7.80863724e-01,
+           'logdistance' : 5.28601392e-02}
+#    3.13522148e+00, 2.23478705e-01, 2.69487404e-02, 9.11720777e-06,
+#       7.53807316e-01, 8.31115736e-03, 4.63256737e-01, 7.80863724e-01,
+#       5.28601392e-02
     for i,v in enumerate(stds.values()):
-        mass_matrix[i,i] = 1/v**2
-    
+        mass_matrix[i,i] = 1./v
+#
 #    print("mass matrix = ",mass_matrix)
 #    exit()
     Kernel    = NUTS
-    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose) for j in range(n_threads)]
+    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 0.3) for j in range(n_threads)]
     
-    samples   = [H.sample(M.new_point(rng = rng[j]),
-                          n=n_samps//n_threads,
-                          t_epochs=e_train,
-                          t=n_train,
-                          mass_estimate = adapt_mass,
+    starting_point = np.array([np.float64(2.970836395983002), np.float64(2.1457700661243417), np.float64(-1.1216815578621249), np.float64(1126259462.4088995), np.float64(32.82289012101475), np.float64(0.8628497064389393), np.float64(-0.4819802030544022), np.float64(1.5720689487945567), np.float64(6.295442867400122)])
+    
+    samples = [H.sample(starting_point,
+                          N=int(n_samps//n_threads),
                           position=j)
                  for j,H in enumerate(HMC)]
     
-    x = []
-    for s in samples:
-        for v in s:
-            x.append(v)
-    
-    v = np.column_stack([[xi[n] for xi in x] for n in names])
-    
     import matplotlib.pyplot as plt
     from corner import corner
-    corner(v,
-                     labels=names,
-                     quantiles=[0.05, 0.5, 0.95], truths = None,
-                     show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
+    corner(samples[0],
+           labels=default_names,
+           quantiles=[0.05, 0.5, 0.95], truths = None,
+           show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
+    
+    fig = plt.figure()
+    for i in range(len(default_names)):
+        ax = fig.add_subplot(len(default_names),1,i+1)
+        ax.plot(samples[0][:,i],'o-',markersize=2)
+        ax.set_ylabel(default_names[i])
+    plt.savefig("trace.pdf",bbox_inches='tight')
     
 

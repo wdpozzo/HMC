@@ -9,6 +9,7 @@ from scipy.special import logsumexp
 import os
 import h5py
 import ray
+from raynest.nest2pos import autocorrelation, acl
 #
 #@ray.remote
 class NUTS:
@@ -19,7 +20,7 @@ class NUTS:
     
     def __init__(self,
                  model,
-                 dt          = 1e0,
+                 dt          = 3e-2,
                  mass_matrix = None,
                  rng         = None,
                  max_storage = None,
@@ -50,21 +51,23 @@ class NUTS:
 #                self.mass_matrix = mass_matrix
             self.mass_matrix = mass_matrix
         
+        self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
         self.momenta_distribution = multivariate_normal(cov=self.mass_matrix)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
 
     def kinetic_energy(self, p):
-        return 0.5*np.dot(p.T,np.dot(self.mass_matrix,p))
+        return 0.5*np.dot(p.T,np.dot(self.inverse_mass_matrix,p))
         
     def sample(self, q0, N=1000, position=0):
     
-        chain = np.empty((N, len(q0)))  # Preallocate storage for samples
+        chain = np.empty((2*N, len(q0)))  # Preallocate storage for samples
         sub_accepted, sub_counter = 0, 1
 
         if self.verbose:
             progress_bar_sampling = tqdm(total=N, desc=f"Sampling {position}", position=position)
 
         while sub_accepted < N:
+        
             p0 = self.momenta_distribution.rvs()
             logP = self.model.log_posterior(q0) - self.kinetic_energy(p0)
             logu = logP - self.rng.exponential()
@@ -84,7 +87,9 @@ class NUTS:
 
                 if sprime:
                     alpha = min(1, nprime / n)
+                    
                     if self.rng.uniform() < alpha:
+#                        print("accepted", sub_counter, len(chain), sub_accepted)
                         q0[:] = qprime  # Avoid extra copying
                         chain[sub_accepted] = q0  # Store sample directly in preallocated array
                         sub_accepted += 1
@@ -97,20 +102,21 @@ class NUTS:
                 s = sprime * (np.dot(delta_q, p_l) > 0) * (np.dot(delta_q, p_r) > 0)
                 j += 1
 
-            self.acceptance = sub_accepted / sub_counter
-            sub_counter += 1
+            self.acceptance = sub_accepted / (sub_counter+sub_accepted)
 
             if self.verbose and sub_counter % 10 == 0:  # Update less frequently for efficiency
                 progress_bar_sampling.set_postfix({"acceptance rate": f"{self.acceptance:.3f}"})
-
-#        samples = chain[:sub_accepted]  # Only keep accepted samples
-        ACL = np.array([acl(chain[:, i], c=5) for i in range(chain.shape[1])])
+            
+            sub_counter += 1
+            
+        samples = chain[:N]  # Only keep accepted samples
+        ACL = np.array([acl(samples[:, i], c=5) for i in range(chain.shape[1])])
 
         thinning = max(int(max(ACL)), 1)
         print(f"thinning = {thinning}")
-
-        self.save_output(chain[::thinning, :])
-        return chain[::thinning, :]
+        thinning = 1
+        self.save_output(samples[::thinning, :])
+        return samples[::thinning, :]
     
     def reset_samples(self):
         self.samples = deque(maxlen = self.max_storage)
@@ -154,7 +160,8 @@ class NUTS:
         q += dt * p  # Full-step position update
 
         # Reflect q against bounds
-        lower_bounds, upper_bounds = np.array(self.prior_bounds).T
+        bounds = np.array([np.array(v, dtype=np.float64) for v in self.prior_bounds.values()])
+        lower_bounds, upper_bounds = bounds.T
         over_upper = q > upper_bounds
         under_lower = q < lower_bounds
 
@@ -262,7 +269,7 @@ if __name__ == "__main__":
      
 #    ray.init()
     
-    dimension = 200
+    dimension = 20
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
