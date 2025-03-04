@@ -11,7 +11,7 @@ import h5py
 import ray
 #
 #@ray.remote
-class HamiltonianMonteCarlo:
+class NUTS:
     """
     HamiltonianMonteCarlo acceptance rule
     for :obj:`raynest.proposal.HamiltonianProposal`
@@ -19,16 +19,18 @@ class HamiltonianMonteCarlo:
     
     def __init__(self,
                  model,
-                 proposal,
+                 dt          = 1e0,
                  mass_matrix = None,
-                 rng = None,
+                 rng         = None,
                  max_storage = None,
-                 output = '.',
-                 verbose = 0):
+                 output      = '.',
+                 verbose     = 0):
 
         self.verbose        = verbose
         self.model          = model
         self.output         = output
+        self.dt             = dt
+        self.prior_bounds   = model.bounds
         
         if rng == None:
             self.rng            = np.random.default_rng()
@@ -37,6 +39,7 @@ class HamiltonianMonteCarlo:
         
         self.max_storage        = max_storage
         self.samples            = deque(maxlen = self.max_storage) # the list of samples from the mcmc chain
+
         if mass_matrix is None:
             self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
         else:
@@ -46,88 +49,68 @@ class HamiltonianMonteCarlo:
 #            else:
 #                self.mass_matrix = mass_matrix
             self.mass_matrix = mass_matrix
-            
-        self.proposal = proposal(self.model, self.rng, self.mass_matrix)
-        self.step_tuning = DualAveragingStepSize(initial_step_size=self.proposal.dt)
+        
+        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix)
+        self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
 
-    def sample(self, oldparam, n = 1000, t = 0, t_epochs = 3, mass_estimate = 0, position = 0):
+    def kinetic_energy(self, p):
+        return 0.5*np.dot(p.T,np.dot(self.mass_matrix,p))
         
-        chain = []
-        
-        sub_accepted = 0
-        sub_counter  = 1
-        
-        for training in range(t_epochs):
-            
-            t_samples = []
-            if self.verbose:
-                progress_bar_tuning   = tqdm(total = int(t), desc = "Tuning {} - cycle {}".format(position, training+1), position=position)
-            
-            for j in range(int(t)):
-                
-                newparam     = self.proposal.get_sample(oldparam.copy())
-
-                if self.proposal.log_J > np.log(self.rng.uniform()):
-                
-                    oldparam        = newparam.copy()
-                    # append the sample to the array of samples
-                    t_samples.append(oldparam)
-                    sub_accepted   += 1
-                
-                self.acceptance     = float(sub_accepted)/float(sub_counter)
-                self.proposal.dt, _ = self.step_tuning.update(self.acceptance)
-                
-                if self.verbose:
-                    pbar_updates = {'dt':f"{self.proposal.dt:.4e}", 'acceptance rate': f"{self.acceptance:.3f}"}
-                    progress_bar_tuning.set_postfix(pbar_updates)
-                    progress_bar_tuning.update(1)
-                
-                sub_counter += 1
-            
-            if mass_estimate == 1:
-            
-                self.inverse_mass_matrix = self.sample_covariance(t_samples)
-                print("mass matrix =", np.linalg.inv(self.inverse_mass_matrix))
-                self.proposal.update_mass_matrix(self.inverse_mass_matrix)
-            _, self.proposal.dt = self.step_tuning.update(self.acceptance)
-            
-            # compute the ACL on the max_storage set of samples, choosing a window length of 5*tau
-            if self.verbose: progress_bar_tuning.close()
+    def sample(self, q0, N=1000, position=0):
     
+        chain = np.empty((N, len(q0)))  # Preallocate storage for samples
+        sub_accepted, sub_counter = 0, 1
+
         if self.verbose:
-            progress_bar_sampling = tqdm(total = int(n), desc = "Sampling {}".format(position), position=position)
-        
-        while len(chain) < n:
+            progress_bar_sampling = tqdm(total=N, desc=f"Sampling {position}", position=position)
 
-            newparam     = self.proposal.get_sample(oldparam.copy())
+        while sub_accepted < N:
+            p0 = self.momenta_distribution.rvs()
+            logP = self.model.log_posterior(q0) - self.kinetic_energy(p0)
+            logu = logP - self.rng.exponential()
 
-            if self.proposal.log_J > np.log(self.rng.uniform()):
-                
-                oldparam        = newparam.copy()
-                # append the sample to the array of samples
-                chain.append(oldparam)
-                
-                if self.verbose:
-                    progress_bar_sampling.update(1)
-                sub_accepted   += 1
-                
-            self.acceptance     = float(sub_accepted)/float(sub_counter)
-            
-            if self.verbose:
-                pbar_updates = {'acceptance rate': f"{self.acceptance:.3f}"}
-                progress_bar_sampling.set_postfix(pbar_updates)
+            q_l, q_r = q0.copy(), q0.copy()
+            p_l, p_r = p0.copy(), p0.copy()
+
+            j, s, n = 0, 1, 1
+
+            while s == 1:
+                v = self.rng.choice((-1, 1))
+
+                if v == -1:
+                    p_l, q_l, _, _, qprime, nprime, sprime = self.build_tree(p_l, q_l, logu, v, j, self.dt)
+                else:
+                    _, _, p_r, q_r, qprime, nprime, sprime = self.build_tree(p_r, q_r, logu, v, j, self.dt)
+
+                if sprime:
+                    alpha = min(1, nprime / n)
+                    if self.rng.uniform() < alpha:
+                        q0[:] = qprime  # Avoid extra copying
+                        chain[sub_accepted] = q0  # Store sample directly in preallocated array
+                        sub_accepted += 1
+
+                        if self.verbose:
+                            progress_bar_sampling.update(1)
+
+                n += nprime
+                delta_q = q_r - q_l
+                s = sprime * (np.dot(delta_q, p_l) > 0) * (np.dot(delta_q, p_r) > 0)
+                j += 1
+
+            self.acceptance = sub_accepted / sub_counter
             sub_counter += 1
-        
-        if self.verbose:
-            progress_bar_sampling.close()
-    
-        samples = np.array([x.values() for x in chain])
-        ACL = [acl(samples[:,i], c=5) for i in range(samples.shape[1])]
 
-        thinning = int(max(ACL))
-        print("thinning = {}".format(thinning))
-        self.save_output(samples[::thinning])
-        return chain[::thinning]
+            if self.verbose and sub_counter % 10 == 0:  # Update less frequently for efficiency
+                progress_bar_sampling.set_postfix({"acceptance rate": f"{self.acceptance:.3f}"})
+
+#        samples = chain[:sub_accepted]  # Only keep accepted samples
+        ACL = np.array([acl(chain[:, i], c=5) for i in range(chain.shape[1])])
+
+        thinning = max(int(max(ACL)), 1)
+        print(f"thinning = {thinning}")
+
+        self.save_output(chain[::thinning, :])
+        return chain[::thinning, :]
     
     def reset_samples(self):
         self.samples = deque(maxlen = self.max_storage)
@@ -161,277 +144,60 @@ class HamiltonianMonteCarlo:
         rec_arr = np.rec.array(samples,dtype=dt)
         grp.create_dataset("posterior_samples", data = rec_arr)
         h.close()
-            
-class HamiltonianProposal(Proposal):
 
-    def __init__(self,
-                 model,
-                 rng,
-                 mass_matrix):
-        """
-        Initialises the class with the kinetic
-        energy and the :obj:`raynest.Model.potential`.
-        """
-        self.model                  = model
-        self.rng                    = rng
-        self.T                      = self.kinetic_energy
-        self.V                      = self.model.potential
-        self.gradient               = self.model.gradient
-        self.prior_bounds           = self.model.bounds
-        self.dimension              = len(self.prior_bounds)
-        self.mass_matrix            = mass_matrix
-        
-        self.inverse_mass_matrix    = np.linalg.inv(self.mass_matrix)
-        self.inverse_mass           = np.diag(self.inverse_mass_matrix)
-        _, self.logdeterminant      = np.linalg.slogdet(self.mass_matrix)
-
-        self.dt                     = 0.3e-3#*self.dimension**0.25
-        self.leaps                  = 100
-        self.maxleaps               = 1000
-        self.DEBUG                  = 0
-        self.trajectories           = []
-        self.set_momenta_distribution()
-
-    def update_mass_matrix(self, inverse_mass_matrix):
-        self.inverse_mass_matrix    = inverse_mass_matrix
-        self.mass_matrix            = np.linalg.inv(self.inverse_mass_matrix)
-        self.inverse_mass           = np.diag(self.inverse_mass_matrix)
-        _, self.logdeterminant      = np.linalg.slogdet(self.mass_matrix)
-        self.set_momenta_distribution()
-        
-    def set_momenta_distribution(self):
-        """
-        update the momenta distribution using the
-        mass matrix (precision matrix of the ensemble).
-        """
-        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix)
-    
-    def unit_normal(self, q):
-        v = self.gradient(q)
-        return v/np.linalg.norm(v)
-
-    def force(self, q):
-        """
-        return the gradient of the potential function as numpy ndarray
-        
-        Parameters
-        ----------
-        q : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        dV: :obj:`numpy.ndarray` gradient evaluated at q
-        """
-        g = self.gradient(q)
-        return np.array([g[n] for n in q.keys()])
-        
-    def kinetic_energy(self,p):
-        """
-        kinetic energy part for the Hamiltonian.
-        Parameters
-        ----------
-        p : :obj:`numpy.ndarray`
-            momentum
-
-        Returns
-        ----------
-        T: :float: kinetic energy
-        """
-        return 0.5 * np.dot(p,np.dot(self.inverse_mass_matrix,p))-self.logdeterminant
-
-    def hamiltonian(self, p, q):
-        """
-        Hamiltonian.
-        Parameters
-        ----------
-        p : :obj:`numpy.ndarray`
-            momentum
-        q : :obj:`raynest.parameter.LivePoint`
-            position
-        Returns
-        ----------
-        H: :float: hamiltonian
-        """
-        return self.T(p) + self.V(q)
-
-class LeapFrog(HamiltonianProposal):
-    """
-    Leap frog integrator proposal for an unconstrained
-    Hamiltonian Monte Carlo step
-    """
-    def get_sample(self, q0, *args):
-        """
-        Propose a new sample, starting at q0
-
-        Parameters
-        ----------
-        q0 : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        q: :obj:`raynest.parameter.LivePoint`
-            position
-        """
-        # generate a canonical momentum
-        p0 = np.atleast_1d(self.momenta_distribution.rvs())
-        initial_energy = self.hamiltonian(p0,q0)
-        # evolve along the trajectory
-        q, p, r = self.evolve_trajectory(p0, q0, *args)
-        # minus sign from the definition of the potential
-        final_energy   = self.hamiltonian(p, q)
-        if r == 1:
-            self.log_J = -np.inf
-        else:
-            self.log_J = min(0.0, initial_energy-final_energy)
-        return q
-
-    def evolve_trajectory(self, p0, q0, *args):
-        """
-        Hamiltonian leap frog trajectory subject to the
-        hard boundary defined by the parameters prior bounds.
-        https://arxiv.org/pdf/1206.1901.pdf
-
-        Parameters
-        ----------
-        p0 : :obj:`numpy.ndarray`
-            momentum
-        q0 : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        p: :obj:`numpy.ndarray` updated momentum vector
-        q: :obj:`raynest.parameter.LivePoint`
-            position
-        """
-        # Updating the momentum a half-step
-        p = p0 - 0.5 * self.dt * self.force(q0)
-        q = q0.copy()
-        
-        for i in range(self.leaps):
-
-            # do a step
-            for j,k in enumerate(q.names):
-                u,l = self.prior_bounds[j][1], self.prior_bounds[j][0]
-                q[k] += self.dt * p[j] * self.inverse_mass[j]
-                # check and reflect against the bounds
-                # of the allowed parameter range
-                while q[k] <= l or q[k] >= u:
-                    if q[k] > u:
-                        q[k] = u - (q[k] - u)
-                        p[j] *= -1
-                    if q[k] < l:
-                        q[k] = l + (l - q[k])
-                        p[j] *= -1
-
-            F = self.force(q)
-            # take a full momentum step
-            p += - self.dt * F
-        # Do a final update of the momentum for a half step
-        p += - 0.5 * self.dt * F
-
-        return q, -p, 0
-
-class NUTS(HamiltonianProposal):
-    
-    def leap(self, dt, p0, q0):
+    def leap_frog(self, dt, p0, q0):
         p = p0.copy()
         q = q0.copy()
 
-        for j,k in enumerate(q.keys()):
-            q[k] += dt * p[j] * self.inverse_mass[j]
-            u, l  = self.prior_bounds[k][1], self.prior_bounds[k][0]
-            # check and reflect against the bounds
-            # of the allowed parameter range
-            while q[k] < l or q[k] > u:
-                if q[k] > u:
-                    q[k] = u - (q[k] - u)
-                    p[j] *= -1
-                if q[k] < l:
-                    q[k] = l + (l - q[k])
-                    p[j] *= -1
-#        # Reflect q against bounds
-#        lower_bounds, upper_bounds = np.array(self.prior_bounds).T
-#        over_upper = q.values() > upper_bounds
-#        under_lower = q.values() < lower_bounds
-#
-#        q.values() = np.where(over_upper, 2 * upper_bounds - q.values(), q.values)
-#        q.values() = np.where(under_lower, 2 * lower_bounds - q.values(), q.values)
-#
-#        # Reflect momentum for out-of-bound coordinates
-#        p = np.where(over_upper | under_lower, -p, p)
+        grad_q = self.model.gradient(q)
+        p += 0.5 * dt * grad_q  # First half-step momentum update
+        q += dt * p  # Full-step position update
 
-        # Update momentum using the force #WE ARE CARRYING OVER A MINUS SIGN!!!!
-        F = self.force(q)
-        p -= dt * F
-#        print("========> q = {} p = {} F = {}".format(q,p,F))
-        return p, q, self.hamiltonian(p, q)
-    
-    def build_tree(self, p0, q0):
-        maxdepth = 10
-        q_r, q_l = q0.copy(), q0.copy()
-        p_r, p_l = p0.copy(), p0.copy()
+        # Reflect q against bounds
+        lower_bounds, upper_bounds = np.array(self.prior_bounds).T
+        over_upper = q > upper_bounds
+        under_lower = q < lower_bounds
 
-        all_qs = []
-        all_ps = []
-        all_H = []
+        reflect_factor = np.where(over_upper | under_lower, -1.0, 1.0)
+        q = np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+        p *= reflect_factor  # Flip momentum for out-of-bound coordinates
 
-        for depth in range(2 ** (maxdepth - 1)):
-            # Randomly choose forward or backward direction
-            v = 1 if self.rng.uniform() < 0.5 else -1
-            dt = v * abs(self.dt)
+        # Final momentum update
+        grad_q = self.model.gradient(q)
+        p += 0.5 * dt * grad_q
 
-            if v == 1:
-                p_r, q_r, H_r = self.leap(dt, p_r, q_r)
-                all_qs.append(q_r)
-                all_ps.append(p_r)
-                all_H.append(H_r)
-            else:
-                p_l, q_l, H_l = self.leap(dt, p_l, q_l)
-                all_qs.append(q_l)
-                all_ps.append(p_l)
-                all_H.append(H_l)
+        return p, q
 
-            # Check for termination
-            delta = np.array([np.abs(q_l[key] - q_r[key]) for key in q_l])
-            if np.dot(delta, p_l) < 0 or np.dot(delta, p_r) < 0:
-                break
-#            print("depth =",depth)
-        # Normalize weights and sample from trajectory
-        H = np.array(all_H)
-#        print("H = {}".format(H))
-        weights = np.exp(H - logsumexp(H))
-        idx = self.rng.choice(len(H), p=weights)
-        return -all_ps[idx], all_qs[idx], H[idx]
+    def build_tree(self, p, q, logu, v, j, dt):
+#        print("j = ",j, "logu = ",logu)
+        if j == 0:
+            # Base case: Take one leapfrog step in the direction of v
+            pprime, qprime = self.leap_frog(v*dt, p, q)
+            logH = self.model.log_posterior(qprime)-self.kinetic_energy(pprime)
+#            print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
+            nprime = int(logu <= logH)
+            sprime = int(logH > logu - 1000)
+            return pprime, qprime, pprime, qprime, qprime, nprime, sprime
+        
+        else:
+            # Recursion: Build the left and right subtrees
+            pprime_l, qprime_l, pprime_r, qprime_r, qprime, nprime, sprime = self.build_tree(p, q, logu, v, j-1, dt)
 
-    def get_sample(self, q0):
-        """
-        Propose a new sample, starting at q0
-
-        Parameters
-        ----------
-        q0 : :obj:`raynest.parameter.LivePoint`
-            position
-
-        Returns
-        ----------
-        q: :obj:`raynest.parameter.LivePoint`
-            position
-        """
-        # generate a canonical momentum
-        p0 = np.atleast_1d(self.momenta_distribution.rvs())
-#        print("mass matrix = {}".format(self.mass_matrix))
-        initial_energy = self.hamiltonian(p0, q0)
-#        print("initial energy = {} p0 = {} q0 = {}".format(initial_energy,p0,q0))
-        # evolve along the trajectory
-        p, q, final_energy = self.build_tree(p0, q0)
-#        print("final energy = {} p = {} q = {}".format(final_energy,p,q))
-        # minus sign from the definition of the potential
-        self.log_J = min(0.0, initial_energy-final_energy)
-#        print("log_J = {}".format(self.log_J))
-        return q
+            if sprime:
+#                print("recursing j =",j, sprime)
+                if v == -1:
+                    pprime_l, qprime_l, _, _, qpprime, npprime, spprime = self.build_tree(pprime_l, qprime_l, logu, v, j-1, dt)
+                else:
+                    _, _, pprime_r, qprime_r, qpprime, npprime, spprime = self.build_tree(pprime_r, qprime_r, logu, v, j-1, dt)
+                
+#                print("nprime = {} npprime = {}".format(nprime,npprime))
+                if self.rng.uniform() < npprime/max(nprime+npprime,1):
+                    qprime = qpprime
+                
+                delta_q = qprime_r-qprime_l
+                sprime = spprime*(np.dot(delta_q,pprime_l)>=0)*(np.dot(delta_q,pprime_r)>=0)
+                nprime = nprime + npprime
+            return pprime_l, qprime_l, pprime_r, qprime_r, qprime, nprime, sprime
 
 class DualAveragingStepSize:
     
@@ -466,7 +232,6 @@ class DualAveragingStepSize:
         
 if __name__ == "__main__":
 
-    from raynest.model import Model
     from scipy.stats import norm
     from raynest.nest2pos import autocorrelation, acl
     import jax
@@ -474,7 +239,7 @@ if __name__ == "__main__":
     from jax import grad
     from functools import partial
     
-    class TestModel(Model):
+    class TestModel:
         
         def __init__(self, n, b):
             self.names  = n
@@ -484,7 +249,7 @@ if __name__ == "__main__":
             return 0.0
         
         def log_likelihood(self, q):
-            return -0.5*np.sum(q.values**2)
+            return -0.5*np.sum(q**2)
         
         def log_posterior(self, q):
             return self.log_prior(q)+self.log_likelihood(q)
@@ -493,90 +258,39 @@ if __name__ == "__main__":
             return -self.log_posterior(q)
         
         def gradient(self, q):
-            return -q.values
-        
-
-    class GaussianMultiModal(Model):
-
-        def __init__(self, n, b):
-            self.names  = n
-            self.bounds = b
-        
-        def log_prior(self, q):
-            return 0.0
-        
-        @partial(jax.jit, static_argnums=(0,))
-        def gauss_func(self, q):
-            
-            input =jnp.array([q])
-            mean = jnp.array([4., 4.])
-            return jnp.log((jnp.exp(-jnp.sum(input**2)))+ (jnp.exp(-jnp.sum((mean-input)**2))))
-            #return -jnp.sum(input**2
-        
-        def log_likelihood(self, q):
- 
-            mean = jnp.array([4., 4.])
-            input = q.values
-            return self.gauss_func(input)
-           
-        
-        def log_posterior(self, q):
-            return self.log_prior(q)+self.log_likelihood(q)
-
-        def potential(self, q):
-            return -self.log_posterior(q)
-        
-        def gradient(self, q):
-            grad1 = grad(self.gauss_func)
-            x = q.values
-            return np.array(grad1(x))
-        
-
-
-    
+            return -q
      
 #    ray.init()
     
-    dimension = 20
+    dimension = 200
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
-    e_train    = 1
+    n_samps    = 1e4
+    n_train    = 1e3
+    e_train    = 0
     adapt_mass = 0
-    verbose    = 0
+    verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
     
     rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
-    M         = GaussianMultiModal(names, bounds)
-    Kernel    = NUTS
-    HMC       = [HamiltonianMonteCarlo(M, Kernel, rng = rng[j], verbose = verbose) for j in range(n_threads)]
-    
-    samples   = [H.sample(M.new_point(rng = rng[j]),
-                          n=n_samps//n_threads,
-                          t_epochs=e_train,
-                          t=n_train,
-                          mass_estimate = adapt_mass,
+    M         = TestModel(names, bounds)
+    HMC       = [NUTS(M, rng = rng[j], verbose = verbose) for j in range(n_threads)]
+    print(HMC)
+    samples   = np.concatenate([H.sample(rng[j].uniform(-10,10,dimension),
+                          N=int(n_samps//n_threads),
                           position=j)
-                 for j,H in enumerate(HMC)]
+                 for j,H in enumerate(HMC)])
     
-    x = []
-    for s in samples:
-        for v in s:
-            x.append(v)
-    
-    v = np.column_stack([[xi[n] for xi in x] for n in names])
-    
-    import matplotlib.pyplot as plt
-    from corner import corner
-    corner(v,
-                     labels=names,
-                     quantiles=[0.05, 0.5, 0.95], truths = None,
-                     show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
-    
-    plt.savefig("corner.pdf",bbox_inches='tight')
+#    import matplotlib.pyplot as plt
+#    from corner import corner
+#    corner(samples,
+#                     labels=names,
+#                     quantiles=[0.05, 0.5, 0.95], truths = None,
+#                     show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
+#    
+#    plt.savefig("corner.pdf",bbox_inches='tight')
     
 #    ray.shutdown()
