@@ -167,7 +167,9 @@ class NUTS:
         under_lower = q < lower_bounds
 
         reflect_factor = np.where(over_upper | under_lower, -1.0, 1.0)
-        q = np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+        q = np.where(q < lower_bounds, 2*lower_bounds-q, q)#np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+        q = np.where(q > upper_bounds, 2*upper_bounds-q, q)
+        
         p *= reflect_factor  # Flip momentum for out-of-bound coordinates
 
         # Final momentum update
@@ -207,6 +209,32 @@ class NUTS:
                 nprime = nprime + npprime
             return pprime_l, qprime_l, pprime_r, qprime_r, qprime, nprime, sprime
 
+    def rmhmc_hamilton(self, p, q):
+        """Compute dq/dt and dp/dt for Riemannian HMC."""
+        G = self.model.metric(q)
+        G_inv = jnp.linalg.inv(G)
+        Gamma = self.model.christoffel_symbols(q)
+
+        dq_dt = jnp.dot(G_inv, p)
+        dp_dt = -self.model.gradient(q)
+
+        # Christoffel correction term
+        for i in range(q.shape[0]):
+            dp_dt -= 0.5 * jnp.dot(p, jnp.dot(Gamma[i], p))
+
+        return dq_dt, dp_dt
+        
+    def rmhmc_leapfrog(p, q, dt):
+        """Single RMHMC leapfrog step."""
+        q_new, p_new = q, p
+
+        for _ in range(3):  # Implicit update (usually need fixed-point iteration)
+            dq, dp = self.rmhmc_hamilton(q_new, p)
+            q_new = q + step_size * dq
+            p_new = p + step_size * dp
+
+        return p_new, q_new
+    
 class DualAveragingStepSize:
     
     def __init__(self, initial_step_size, target_accept=0.5, gamma=0.05, t0=10.0, kappa=0.75):

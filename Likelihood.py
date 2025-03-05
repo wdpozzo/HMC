@@ -305,7 +305,9 @@ if __name__ == '__main__':
                                          trigtime = trigtime,
                                          sampling_rate = sampling_rate)
                                          for det in detector_names]
+                                         
             self.gradient_function = jax.grad(self.log_posterior)
+            self.metric_function   = jax.hessian(self.log_posterior)
             
         def new_point(self, rng = None):
             """
@@ -365,7 +367,7 @@ if __name__ == '__main__':
         
         def log_posterior(self, params):
             
-            return self.log_likelihood(params) + self.log_prior(params)
+            return  self.log_likelihood(params) + self.log_prior(params) #
         
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
@@ -391,6 +393,24 @@ if __name__ == '__main__':
 #            #print("posterior =",self.log_posterior(params))
 #            return g
             return self.gradient_function(params)
+        
+        def metric(self, q):
+            return self.metric_function(q)
+     
+        def christoffel_symbols(self, q):
+            """Compute the Christoffel symbols for the given metric tensor."""
+            G = self.metric(q)
+            G_inv = jnp.linalg.inv(G)
+            dG = jacfwd(metric_tensor)(q)  # Gradient of G w.r.t. q
+
+            def single_gamma(i, j, k):
+                """Compute a single Christoffel symbol Γ^k_ij."""
+                return 0.5 * jnp.sum(G_inv[k, :] * (dG[j, :, i] + dG[i, :, j] - dG[:, i, j]))
+
+            Gamma = jax.vmap(lambda i: jax.vmap(lambda j: jax.vmap(lambda k: single_gamma(i, j, k), jnp.arange(q.shape[0])))(jnp.arange(q.shape[0])))(jnp.arange(q.shape[0]))
+
+            return Gamma
+        
      
 #    ray.init()
 
@@ -410,7 +430,7 @@ if __name__ == '__main__':
     default_bounds = {'phiref'      : [0.0,2.0*jnp.pi],
                       'ra'          : [0.0,2.0*jnp.pi],
                       'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-                      'tc'          : [trigtime-0.5,trigtime+0.5],
+                      'tc'          : [trigtime-0.05,trigtime+0.05],
                       'mc'          : [5.0,40.0],
                       'q'           : [0.125,1.0],
                       'costheta_jn' : [-1.0,1.0],
@@ -418,7 +438,7 @@ if __name__ == '__main__':
                       'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
     
     n_threads  = 1
-    n_samps    = 1e4
+    n_samps    = 1e3
     n_train    = 1e3
     e_train    = 0
     adapt_mass = 0
@@ -477,7 +497,7 @@ if __name__ == '__main__':
         -3.59460134e-04,  2.77549823e-02,  3.02205777e-03,
         -3.23932733e-02,  5.67334552e-03,  5.28601392e-02]]))
 
-    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 5e-3) for j in range(n_threads)]
+    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 3e-2) for j in range(n_threads)]
     
     starting_point = np.array([np.float64(2.970836395983002), np.float64(2.1457700661243417), np.float64(-1.1216815578621249), np.float64(1126259462.4088995), np.float64(32.82289012101475), np.float64(0.8628497064389393), np.float64(-0.4819802030544022), np.float64(1.5720689487945567), np.float64(6.295442867400122)])
     
@@ -493,7 +513,8 @@ if __name__ == '__main__':
     for i in range(len(default_names)):
         ax = fig.add_subplot(len(default_names),1,i+1)
         ax.plot(samples[:,i],'o-',markersize=2)
-        ax.set_ylabel(default_names[i])
+        ax.set_ylabel(default_names[i], fontsize = 4)
+    plt.subplots_adjust()
     plt.savefig("trace.pdf",bbox_inches='tight')
     
     from corner import corner
