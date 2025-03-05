@@ -1,15 +1,27 @@
 import numpy as np
 #import numpy
 import ray
-from raynest.proposal import Proposal
+#from raynest.proposal import Proposal
 from scipy.stats import multivariate_normal
 from tqdm import tqdm
+from functools import partial
 from collections import deque
 from scipy.special import logsumexp
 import os
 import h5py
+import jax
 import ray
 from raynest.nest2pos import autocorrelation, acl
+
+
+@partial(jax.jit, static_argnums=(0,))
+def compute_mass_matrix(model, q):
+    print(model.hessian(q))
+    mass_matrix = model.hessian(q)
+    inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
+    det = jnp.linalg.det(mass_matrix)
+    return mass_matrix, inverse_mass_matrix, det
+
 #
 #@ray.remote
 class NUTS:
@@ -20,7 +32,7 @@ class NUTS:
     
     def __init__(self,
                  model,
-                 dt          = 3e-2,
+                 dt          = 0.1,
                  mass_matrix = None,
                  rng         = None,
                  max_storage = None,
@@ -29,6 +41,7 @@ class NUTS:
 
         self.verbose        = verbose
         self.model          = model
+        self.f_max          = 10
         self.output         = output
         self.dt             = dt
         self.prior_bounds   = model.bounds
@@ -52,24 +65,72 @@ class NUTS:
             self.mass_matrix = mass_matrix
         
         self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
-        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix)
+        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
+        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix, seed = self.rng)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
+  
+    @partial(jax.jit, static_argnums = (0))
+    def kinetic_energy(self, p, q):
+        _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q)
+        return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))#-0.5*self.logdet + 0.5*len(p)*np.log(2*np.pi)
+    
 
-    def kinetic_energy(self, p):
-        return 0.5*np.dot(p.T,np.dot(self.inverse_mass_matrix,p))
+    @partial(jax.jit, static_argnums = (0))
+    def hamiltonian(self, p, q):
+        return self.kinetic_energy(p, q) + self.model.potential(q)
+    @partial(jax.jit, static_argnums = (0))
+    def hamiltonian_gradient(self, p, q):
+        gradH_q = jax.grad(self.hamiltonian, argnums=1)(p, q)
+        return gradH_q
+    
+    @partial(jax.jit, static_argnums = (0))
+    def generalized_leap_frog(self, dt, p0, q0):
         
-    def sample(self, q0, N=1000, position=0):
+        p = p0.copy()
+        q = q0.copy()
+        print(self.inverse_mass_matrix)
+        
+        for f in range(self.f_max):
+            p -= 0.5 * dt * jax.grad(self.hamiltonian, argnums=1)(p, q)
+            gradH_q = self.hamiltonian_gradient(p, q)
+        _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q)
+        gradH_p = jnp.dot(inverse_mass_matrix, p)
+        gradHprime_p = gradH_p.copy()
+        
+        for f in range(self.f_max):
+            q += dt * (gradHprime_p + gradH_p)/2
+            gradH_q = self.hamiltonian_gradient(p, q)
+            _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q)
+
+            gradHprime_p = jnp.dot(inverse_mass_matrix,p)
+
+        
+        gradH_q = self.hamiltonian_gradient(p, q)
+        p -= 0.5 * dt * gradH_q
+        gradH_q = self.hamiltonian_gradient(p, q)
+        #print( q)
+        #print("generalized leap frog time = ", time.time()-start)
+        return p, q
+        
+        
+    
+
+
+    
+        
+    def sample(self, q0, N=1000, n_train = 100, position=0):
     
         chain = np.empty((2*N, len(q0)))  # Preallocate storage for samples
         sub_accepted, sub_counter = 0, 1
-
         if self.verbose:
             progress_bar_sampling = tqdm(total=N, desc=f"Sampling {position}", position=position)
 
         while sub_accepted < N:
-        
+            mass_matrix, _, _ = compute_mass_matrix(self.model, q0)
+            self.momenta_distribution = multivariate_normal(cov=mass_matrix, seed = self.rng)
+
             p0 = self.momenta_distribution.rvs()
-            logP = self.model.log_posterior(q0) - self.kinetic_energy(p0)
+            logP = self.model.log_posterior(q0) - self.kinetic_energy(p0, q0)
             logu = logP - self.rng.exponential()
 
             q_l, q_r = q0.copy(), q0.copy()
@@ -103,6 +164,9 @@ class NUTS:
                 j += 1
 
             self.acceptance = sub_accepted / (sub_counter+sub_accepted)
+            if sub_accepted < n_train:
+                self.dt, _ = self.step_tuning.update(self.acceptance)
+                progress_bar_sampling.set_postfix({"dt": f"{self.dt:.3f}"})
 
             if self.verbose and sub_counter % 10 == 0:  # Update less frequently for efficiency
                 progress_bar_sampling.set_postfix({"acceptance rate": f"{self.acceptance:.3f}"})
@@ -160,7 +224,7 @@ class NUTS:
         q += dt * p  # Full-step position update
 
         # Reflect q against bounds
-        bounds = np.array([np.array(v, dtype=np.float64) for v in self.prior_bounds.values()])
+        bounds = np.array([np.array(v, dtype=np.float64) for v in self.prior_bounds])
         lower_bounds, upper_bounds = bounds.T
         over_upper = q > upper_bounds
         under_lower = q < lower_bounds
@@ -179,8 +243,8 @@ class NUTS:
 #        print("j = ",j, "logu = ",logu)
         if j == 0:
             # Base case: Take one leapfrog step in the direction of v
-            pprime, qprime = self.leap_frog(v*dt, p, q)
-            logH = self.model.log_posterior(qprime)-self.kinetic_energy(pprime)
+            pprime, qprime = self.generalized_leap_frog(v*dt, p, q)
+            logH = self.model.log_posterior(qprime)-self.kinetic_energy(pprime, qprime)
 #            print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
             nprime = int(logu <= logH)
             sprime = int(logH > logu - 1000)
@@ -208,7 +272,7 @@ class NUTS:
 
 class DualAveragingStepSize:
     
-    def __init__(self, initial_step_size, target_accept=0.65, gamma=0.05, t0=10.0, kappa=0.75):
+    def __init__(self, initial_step_size, target_accept=0.5, gamma=0.05, t0=10.0, kappa=0.75):
     
         self.mu = np.log(10 * initial_step_size)  # proposals are biased upwards to stay away from 0.
         self.target_accept = target_accept
@@ -251,21 +315,28 @@ if __name__ == "__main__":
         def __init__(self, n, b):
             self.names  = n
             self.bounds = b
-        
+        @partial(jax.jit, static_argnums = (0))
         def log_prior(self, q):
             return 0.0
-        
+        @partial(jax.jit, static_argnums = (0))
         def log_likelihood(self, q):
             return -0.5*np.sum(q**2)
-        
+        @partial(jax.jit, static_argnums = (0))
         def log_posterior(self, q):
             return self.log_prior(q)+self.log_likelihood(q)
-
+        @partial(jax.jit, static_argnums = (0))
         def potential(self, q):
             return -self.log_posterior(q)
-        
+        @partial(jax.jit, static_argnums = (0))
         def gradient(self, q):
             return -q
+        
+        @partial(jax.jit, static_argnums = (0))
+        def hessian(self, q):
+            return np.eye(len(q))
+        
+
+
      
 #    ray.init()
     
@@ -274,8 +345,8 @@ if __name__ == "__main__":
     bounds = [[-10,10] for _ in names]
     
     n_threads  = 1
-    n_samps    = 1e4
-    n_train    = 1e3
+    n_samps    = 1e5
+    n_train    = 1e4
     e_train    = 0
     adapt_mass = 0
     verbose    = 1
@@ -287,17 +358,17 @@ if __name__ == "__main__":
     HMC       = [NUTS(M, rng = rng[j], verbose = verbose) for j in range(n_threads)]
     print(HMC)
     samples   = np.concatenate([H.sample(rng[j].uniform(-10,10,dimension),
-                          N=int(n_samps//n_threads),
+                          N=int(n_samps//n_threads),n_train = n_train//n_threads, 
                           position=j)
                  for j,H in enumerate(HMC)])
     
-#    import matplotlib.pyplot as plt
-#    from corner import corner
-#    corner(samples,
-#                     labels=names,
-#                     quantiles=[0.05, 0.5, 0.95], truths = None,
-#                     show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
-#    
-#    plt.savefig("corner.pdf",bbox_inches='tight')
+    import matplotlib.pyplot as plt
+    from corner import corner
+    corner(samples,
+                        labels=names,
+                        quantiles=[0.05, 0.5, 0.95], truths = None,
+                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
-#    ray.shutdown()
+    plt.savefig("corner.pdf",bbox_inches='tight')
+        
+    ray.shutdown()
