@@ -16,7 +16,7 @@ from raynest.nest2pos import autocorrelation, acl
 
 @partial(jax.jit, static_argnums=(0,))
 def compute_mass_matrix(model, q):
-    print(model.hessian(q))
+#    print(model.hessian(q))
     mass_matrix = model.hessian(q)
     inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
     det = jnp.linalg.det(mass_matrix)
@@ -309,18 +309,30 @@ if __name__ == "__main__":
     import jax.numpy as jnp
     from jax import grad
     from functools import partial
+    from scipy.stats import random_correlation
     
     class TestModel:
         
         def __init__(self, n, b):
             self.names  = n
             self.bounds = b
+            self.means  = rng[0].uniform(-5,5,len(n))
+            eigs        = rng[0].uniform(1,50,len(n))
+            if eigs.shape[0] > 1:
+                eigs        = np.array(len(n)*eigs/np.sum(eigs))
+                cov         = random_correlation.rvs(eigs, random_state=rng[0])
+                self.inv_cov = np.linalg.inv(cov)
+            else:
+                self.inv_cov = np.eye(1)*(1./eigs)
+                
         @partial(jax.jit, static_argnums = (0))
         def log_prior(self, q):
             return 0.0
         @partial(jax.jit, static_argnums = (0))
         def log_likelihood(self, q):
-            return -0.5*np.sum(q**2)
+            r = q-self.means
+            return -0.5*jnp.dot(r.T,jnp.dot(self.inv_cov,r))
+            
         @partial(jax.jit, static_argnums = (0))
         def log_posterior(self, q):
             return self.log_prior(q)+self.log_likelihood(q)
@@ -329,25 +341,26 @@ if __name__ == "__main__":
             return -self.log_posterior(q)
         @partial(jax.jit, static_argnums = (0))
         def gradient(self, q):
-            return -q
+            r = q-self.means
+            return -jnp.dot(self.inv_cov,r)
         
         @partial(jax.jit, static_argnums = (0))
         def hessian(self, q):
-            return np.eye(len(q))
+            return self.inv_cov
         
 
 
      
 #    ray.init()
     
-    dimension = 20
+    dimension = 2
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
     n_threads  = 1
-    n_samps    = 1e5
-    n_train    = 1e4
-    e_train    = 0
+    n_samps    = 1e4
+    n_train    = 1e3
+    e_train    = 1
     adapt_mass = 0
     verbose    = 1
     n_bins     = int(np.sqrt(n_samps))
@@ -363,10 +376,21 @@ if __name__ == "__main__":
                  for j,H in enumerate(HMC)])
     
     import matplotlib.pyplot as plt
+    
+    fig = plt.figure()
+    for i,n in enumerate(names):
+        ax = fig.add_subplot(len(names),1,(i+1))
+        ax.plot(samples[:,i],'o-',lw=0.2,color='blue')
+        ax.axhline(M.means[i],color='r')
+        ax.set_ylabel(n, fontsize=4)
+    plt.subplots_adjust()
+    plt.savefig('trace.pdf',bbox_inches='tight')
+    
+    
     from corner import corner
     corner(samples,
                         labels=names,
-                        quantiles=[0.05, 0.5, 0.95], truths = None,
+                        quantiles=[0.05, 0.5, 0.95], truths = M.means,
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
