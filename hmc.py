@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 #import numpy
 import ray
 #from raynest.proposal import Proposal
@@ -16,11 +17,10 @@ from raynest.nest2pos import autocorrelation, acl
 
 @partial(jax.jit, static_argnums=(0,))
 def compute_mass_matrix(model, q):
-#    print(model.hessian(q))
     mass_matrix = model.hessian(q)
     inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
     det = jnp.linalg.det(mass_matrix)
-    return mass_matrix, inverse_mass_matrix, det
+    return (mass_matrix.T+mass_matrix)/2., (inverse_mass_matrix.T+inverse_mass_matrix)/2., det
 
 #
 #@ray.remote
@@ -41,7 +41,7 @@ class NUTS:
 
         self.verbose        = verbose
         self.model          = model
-        self.f_max          = 10
+        self.f_max          = 3
         self.output         = output
         self.dt             = dt
         self.prior_bounds   = model.bounds
@@ -54,19 +54,19 @@ class NUTS:
         self.max_storage        = max_storage
         self.samples            = deque(maxlen = self.max_storage) # the list of samples from the mcmc chain
 
-        if mass_matrix is None:
-            self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
-        else:
-#            # determine the nature of the matrix, is it a callabe function or a numpy array
-#            if callable(mass_matrix):
-#                self.mass_matrix = mass_matrix()
-#            else:
-#                self.mass_matrix = mass_matrix
-            self.mass_matrix = mass_matrix
-        
-        self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
-        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
-        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix, seed = self.rng)
+#        if mass_matrix is None:
+#            self.mass_matrix = np.diag(np.ones(len(self.model.bounds))) #/np.abs(b[1]-b[0])
+#        else:
+##            # determine the nature of the matrix, is it a callabe function or a numpy array
+##            if callable(mass_matrix):
+##                self.mass_matrix = mass_matrix()
+##            else:
+##                self.mass_matrix = mass_matrix
+#            self.mass_matrix = mass_matrix
+#        
+#        self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
+#        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
+#        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix, seed = self.rng, allow_singular=True)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
   
     @partial(jax.jit, static_argnums = (0))
@@ -78,6 +78,7 @@ class NUTS:
     @partial(jax.jit, static_argnums = (0))
     def hamiltonian(self, p, q):
         return self.kinetic_energy(p, q) + self.model.potential(q)
+        
     @partial(jax.jit, static_argnums = (0))
     def hamiltonian_gradient(self, p, q):
         gradH_q = jax.grad(self.hamiltonian, argnums=1)(p, q)
@@ -88,8 +89,7 @@ class NUTS:
         
         p = p0.copy()
         q = q0.copy()
-        print(self.inverse_mass_matrix)
-        
+
         for f in range(self.f_max):
             p -= 0.5 * dt * jax.grad(self.hamiltonian, argnums=1)(p, q)
             gradH_q = self.hamiltonian_gradient(p, q)
@@ -110,15 +110,10 @@ class NUTS:
         gradH_q = self.hamiltonian_gradient(p, q)
         #print( q)
         #print("generalized leap frog time = ", time.time()-start)
+        print("in the leap frog",jnp.array(p0),jnp.array(q0),jnp.array(p),jnp.array(q))
         return p, q
-        
-        
-    
-
-
-    
-        
-    def sample(self, q0, N=1000, n_train = 100, position=0):
+ 
+    def sample(self, q0, N=1000, n_train = 0, position=0):
     
         chain = np.empty((2*N, len(q0)))  # Preallocate storage for samples
         sub_accepted, sub_counter = 0, 1
@@ -126,10 +121,14 @@ class NUTS:
             progress_bar_sampling = tqdm(total=N, desc=f"Sampling {position}", position=position)
 
         while sub_accepted < N:
-            mass_matrix, _, _ = compute_mass_matrix(self.model, q0)
-            self.momenta_distribution = multivariate_normal(cov=mass_matrix, seed = self.rng)
+            _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q0)
+            print("inverse mass = ", inverse_mass_matrix)
+            self.momenta_distribution = multivariate_normal(cov=np.eye(len(self.model.names)), seed = self.rng, allow_singular=True)
 
             p0 = self.momenta_distribution.rvs()
+            print("p0 from identity",p0)
+            p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix).T,p0)/p0
+            print("p0 correlated",p0)
             logP = self.model.log_posterior(q0) - self.kinetic_energy(p0, q0)
             logu = logP - self.rng.exponential()
 
@@ -162,7 +161,7 @@ class NUTS:
                 delta_q = q_r - q_l
                 s = sprime * (np.dot(delta_q, p_l) > 0) * (np.dot(delta_q, p_r) > 0)
                 j += 1
-
+                print("in the sampling ==>",j)
             self.acceptance = sub_accepted / (sub_counter+sub_accepted)
             if sub_accepted < n_train:
                 self.dt, _ = self.step_tuning.update(self.acceptance)
@@ -178,7 +177,7 @@ class NUTS:
 
         thinning = max(int(max(ACL)), 1)
         print(f"thinning = {thinning}")
-        thinning = 1
+#        thinning = 1
         self.save_output(samples[::thinning, :])
         return samples[::thinning, :]
     
@@ -240,14 +239,17 @@ class NUTS:
         return p, q
 
     def build_tree(self, p, q, logu, v, j, dt):
-#        print("j = ",j, "logu = ",logu)
+        print("j = ",j, "logu = ",logu)
         if j == 0:
             # Base case: Take one leapfrog step in the direction of v
+            print("before leap frog",p, q)
             pprime, qprime = self.generalized_leap_frog(v*dt, p, q)
+            print("after leap frog",pprime, qprime)
             logH = self.model.log_posterior(qprime)-self.kinetic_energy(pprime, qprime)
 #            print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
             nprime = int(logu <= logH)
             sprime = int(logH > logu - 1000)
+            print("leaf in the tree =",pprime, qprime, pprime, qprime, qprime, nprime, sprime)
             return pprime, qprime, pprime, qprime, qprime, nprime, sprime
         
         else:
@@ -318,6 +320,9 @@ if __name__ == "__main__":
             self.bounds = b
             self.means  = rng[0].uniform(-5,5,len(n))
             eigs        = rng[0].uniform(1,50,len(n))
+            self.gradient_function = jax.grad(self.log_posterior)
+            self.metric_function   = jax.hessian(self.log_posterior)
+            
             if eigs.shape[0] > 1:
                 eigs        = np.array(len(n)*eigs/np.sum(eigs))
                 cov         = random_correlation.rvs(eigs, random_state=rng[0])
@@ -341,12 +346,14 @@ if __name__ == "__main__":
             return -self.log_posterior(q)
         @partial(jax.jit, static_argnums = (0))
         def gradient(self, q):
-            r = q-self.means
-            return -jnp.dot(self.inv_cov,r)
+#            r = q-self.means
+#            return -jnp.dot(self.inv_cov,r)
+            return -self.gradient_function(q)
         
         @partial(jax.jit, static_argnums = (0))
         def hessian(self, q):
-            return self.inv_cov
+#            return self.inv_cov
+            return -self.metric_function(q)
         
 
 
@@ -359,7 +366,7 @@ if __name__ == "__main__":
     
     n_threads  = 1
     n_samps    = 1e4
-    n_train    = 1e3
+    n_train    = 0*1e3
     e_train    = 1
     adapt_mass = 0
     verbose    = 1

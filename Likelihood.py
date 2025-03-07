@@ -22,10 +22,14 @@ from hmc import NUTS
 
 from jax import jit
 
-@jit
+@jax.jit
 def TaylorF2(params, frequency_array):
     # Extract parameters
-    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
+#    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
+    Mc, q = params[0], params[1],
+    phi_c = np.float64(2.970836395983002)
+    logdistance = np.float64(6.295442867400122)
+    costheta_jn = np.float64(-0.4819802030544022)
 
     # Compute mass and distance-related terms
     distance = jnp.exp(logdistance)
@@ -225,7 +229,8 @@ class GWDetector:
 
 
         return a_, b_
-
+        
+    @partial(jax.jit, static_argnums = (0))
     def project_waveform(self, params):
             #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         h_plus, h_cross = TaylorF2(params, self.Frequency)
@@ -239,7 +244,8 @@ class GWDetector:
 
         h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
         return h
-
+        
+    @partial(jax.jit, static_argnums = (0))
     def antenna_pattern_functions(self, params):
         '''
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
@@ -260,15 +266,19 @@ class GWDetector:
         :return: tuple of float or np.ndarray
             fplus and fcross.
         '''
-
-        ra = params[1]#np.radians(right_ascension)
-        dec = params[2]#np.radians(declination)
-
-        pol = params[7]#np.radians(polarization)
+        ra = np.float64(2.1457700661243417)
+        dec =  np.float64(-1.1216815578621249)
+        pol = np.float64(1.5720689487945567)
+        tc = np.float64(1126259462.4088995)
+#        ra = params[1]#np.radians(right_ascension)
+#        dec = params[2]#np.radians(declination)
+#
+#        pol = params[7]#np.radians(polarization)
+#        tc  = params[3]
         lat = jnp.radians(self.latitude)
         g_ = jnp.radians(self.gamma)
         z_ = jnp.radians(self.zeta)
-        gmst = jnp.mod(GreenwichMeanSiderealTime(params[3]), 2*jnp.pi)
+        gmst = jnp.mod(GreenwichMeanSiderealTime(tc), 2*jnp.pi)
         lst = gmst + jnp.radians(self.longitude)
         ampl11, ampl12 = self._ab_factors(g_, lat, ra, dec, lst)
 
@@ -277,7 +287,8 @@ class GWDetector:
         fcross = jnp.sin(z_)*(ampl12*jnp.cos(2*pol) - ampl11*jnp.sin(2*pol))
 
         return fplus, fcross
-    #@partial(jax.jit, static_argnums=(0,))
+        
+    @partial(jax.jit, static_argnums=(0,))
     def log_likelihood(self, params):
     
         h = self.project_waveform(params)
@@ -301,7 +312,8 @@ if __name__ == '__main__':
             self.names  = n
             self.bounds = b
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
-            self.gradient_function = jax.grad(self.log_posterior)
+            self.gradient_function = jax.grad(self.potential)
+            self.metric_function    = jax.hessian(self.potential)
             
         def new_point(self, rng = None):
             """
@@ -324,18 +336,21 @@ if __name__ == '__main__':
             
             return p
         
+        @partial(jax.jit, static_argnums = (0))
         def log_prior(self, params):
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         
             logP = 0.0
-            logP += 3.0*params[8]
+#            logP += 3.0*params[8]
 
             # declination
-            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
+#            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
 
             # chirp mass and mass ratio
-            mc      = params[4]
-            q       = params[5]
+#            mc      = params[4]
+#            q       = params[5]
+            mc      = params[0]
+            q       = params[1]
             logP   += jnp.log(mc)
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             return logP
@@ -359,10 +374,12 @@ if __name__ == '__main__':
 #                    return False
             return all(self.bounds[n][0] < param[n] < self.bounds[n][1] for n in param.keys())
         
+        @partial(jax.jit, static_argnums = (0))
         def log_posterior(self, params):
             
-            return self.log_likelihood(params) + self.log_prior(params)
+            return self.log_prior(params) + self.log_likelihood(params)#self.log_prior(params)# +
         
+        @partial(jax.jit, static_argnums = (0))
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
             log_likelihoods = jnp.array([det.log_likelihood(params) for det in self.detectors])
@@ -372,7 +389,8 @@ if __name__ == '__main__':
 
         def potential(self, q):
             return -self.log_posterior(q)
-        
+            
+        @partial(jax.jit, static_argnums = (0))
         def gradient(self, params):
             """
             we need to compute for each detector
@@ -386,36 +404,44 @@ if __name__ == '__main__':
 #            #print("gradient =",g)
 #            #print("posterior =",self.log_posterior(params))
 #            return g
-            return self.gradient_function(params)
+            return -self.gradient_function(params)
+
+        @partial(jax.jit, static_argnums = (0))
+        def hessian(self, params):
+            return -self.metric_function(params)
      
 #    ray.init()
 
     # default parameters' names
-    default_names = ['phiref',
-                     'ra',
-                     'dec',
-                     'tc',
+    default_names = [
+#                     'phiref',
+#                     'ra',
+#                     'dec',
+#                     'tc',
                      'mc',
                      'q',
-                     'costheta_jn',
-                     'psi',
-                     'logdistance']
+#                     'costheta_jn',
+#                     'psi',
+#                     'logdistance'
+                     ]
 
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
-    default_bounds = {'phiref'      : [0.0,2.0*jnp.pi],
-                      'ra'          : [0.0,2.0*jnp.pi],
-                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-                      'tc'          : [trigtime-0.05,trigtime+0.05],
-                      'mc'          : [5.0,40.0],
+    default_bounds = {
+#                      'phiref'      : [0.0,2.0*jnp.pi],
+#                      'ra'          : [0.0,2.0*jnp.pi],
+#                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
+#                      'tc'          : [trigtime-0.05,trigtime+0.05],
+                      'mc'          : [1.0,40.0],
                       'q'           : [0.125,1.0],
-                      'costheta_jn' : [-1.0,1.0],
-                      'psi'         : [0.0,jnp.pi],
-                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]}
+#                      'costheta_jn' : [-1.0,1.0],
+#                      'psi'         : [0.0,jnp.pi],
+#                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]
+                      }
     
     n_threads  = 1
-    n_samps    = 1e4
-    n_train    = 1e3
+    n_samps    = 1e3
+    n_train    = 0e3
     e_train    = 0
     adapt_mass = 0
     verbose    = 1
@@ -424,58 +450,68 @@ if __name__ == '__main__':
     rng         = [np.random.default_rng(111+j) for j in range(n_threads)]
 
     M           = RapidPE(default_names, default_bounds, ["H1","L1"])
-    mass_matrix = np.eye(len(default_names))
-    
-    stds = {'phiref'      : 3.13522148e+00,
-           'ra'          : 2.23478705e-01,
-           'dec'         : 2.69487404e-02,
-           'tc'          : 9.11720777e-06,
-           'mc'          : 7.53807316e-01,
-           'q'           : 8.31115736e-03,
-           'costheta_jn' : 4.63256737e-01,
-           'psi'         : 7.80863724e-01,
-           'logdistance' : 5.28601392e-02}
-#    3.13522148e+00, 2.23478705e-01, 2.69487404e-02, 9.11720777e-06,
-#       7.53807316e-01, 8.31115736e-03, 4.63256737e-01, 7.80863724e-01,
-#       5.28601392e-02
-    for i,v in enumerate(stds.values()):
-        mass_matrix[i,i] = 1./v
-##
-#    print("mass matrix = ",mass_matrix)
-#    exit()
-    
-    mass_matrix = np.linalg.inv(np.array([[ 3.13522148e+00, -6.23718264e-02, -1.10763474e-02,
-         3.56164964e-04, -1.14409649e-01, -1.31966170e-04,
-         1.69214510e-02,  5.71525977e-02, -1.17262267e-02],
-       [-6.23718264e-02,  2.23478705e-01,  2.67315995e-02,
-        -1.28340626e-03, -1.20094030e-02,  4.04489879e-03,
-        -1.33341820e-02,  3.00868686e-03,  5.51567679e-02],
-       [-1.10763474e-02,  2.67315995e-02,  2.69487404e-02,
-        -8.68979178e-07, -3.08133331e-03,  5.21338908e-04,
-         3.87100007e-02,  5.59990262e-03, -1.06701029e-03],
-       [ 3.56164964e-04, -1.28340626e-03, -8.68979178e-07,
-         9.11720777e-06, -1.80715855e-06, -1.59490216e-05,
-         3.32798566e-04, -2.36703410e-05, -3.59460134e-04],
-       [-1.14409649e-01, -1.20094030e-02, -3.08133331e-03,
-        -1.80715855e-06,  7.53807316e-01,  1.85505149e-02,
-         1.49217049e-02,  1.52733656e-02,  2.77549823e-02],
-       [-1.31966170e-04,  4.04489879e-03,  5.21338908e-04,
-        -1.59490216e-05,  1.85505149e-02,  8.31115736e-03,
-        -3.78035464e-04,  2.96584220e-03,  3.02205777e-03],
-       [ 1.69214510e-02, -1.33341820e-02,  3.87100007e-02,
-         3.32798566e-04,  1.49217049e-02, -3.78035464e-04,
-         4.63256737e-01, -5.84563953e-03, -3.23932733e-02],
-       [ 5.71525977e-02,  3.00868686e-03,  5.59990262e-03,
-        -2.36703410e-05,  1.52733656e-02,  2.96584220e-03,
-        -5.84563953e-03,  7.80863724e-01,  5.67334552e-03],
-       [-1.17262267e-02,  5.51567679e-02, -1.06701029e-03,
-        -3.59460134e-04,  2.77549823e-02,  3.02205777e-03,
-        -3.23932733e-02,  5.67334552e-03,  5.28601392e-02]]))
+#    mass_matrix = np.eye(len(default_names))
+#    
+#    stds = {'phiref'      : 3.13522148e+00,
+#           'ra'          : 2.23478705e-01,
+#           'dec'         : 2.69487404e-02,
+#           'tc'          : 9.11720777e-06,
+#           'mc'          : 7.53807316e-01,
+#           'q'           : 8.31115736e-03,
+#           'costheta_jn' : 4.63256737e-01,
+#           'psi'         : 7.80863724e-01,
+#           'logdistance' : 5.28601392e-02}
+##    3.13522148e+00, 2.23478705e-01, 2.69487404e-02, 9.11720777e-06,
+##       7.53807316e-01, 8.31115736e-03, 4.63256737e-01, 7.80863724e-01,
+##       5.28601392e-02
+#    for i,v in enumerate(stds.values()):
+#        mass_matrix[i,i] = 1./v
+###
+##    print("mass matrix = ",mass_matrix)
+##    exit()
+#    
+#    mass_matrix = np.linalg.inv(np.array([[ 3.13522148e+00, -6.23718264e-02, -1.10763474e-02,
+#         3.56164964e-04, -1.14409649e-01, -1.31966170e-04,
+#         1.69214510e-02,  5.71525977e-02, -1.17262267e-02],
+#       [-6.23718264e-02,  2.23478705e-01,  2.67315995e-02,
+#        -1.28340626e-03, -1.20094030e-02,  4.04489879e-03,
+#        -1.33341820e-02,  3.00868686e-03,  5.51567679e-02],
+#       [-1.10763474e-02,  2.67315995e-02,  2.69487404e-02,
+#        -8.68979178e-07, -3.08133331e-03,  5.21338908e-04,
+#         3.87100007e-02,  5.59990262e-03, -1.06701029e-03],
+#       [ 3.56164964e-04, -1.28340626e-03, -8.68979178e-07,
+#         9.11720777e-06, -1.80715855e-06, -1.59490216e-05,
+#         3.32798566e-04, -2.36703410e-05, -3.59460134e-04],
+#       [-1.14409649e-01, -1.20094030e-02, -3.08133331e-03,
+#        -1.80715855e-06,  7.53807316e-01,  1.85505149e-02,
+#         1.49217049e-02,  1.52733656e-02,  2.77549823e-02],
+#       [-1.31966170e-04,  4.04489879e-03,  5.21338908e-04,
+#        -1.59490216e-05,  1.85505149e-02,  8.31115736e-03,
+#        -3.78035464e-04,  2.96584220e-03,  3.02205777e-03],
+#       [ 1.69214510e-02, -1.33341820e-02,  3.87100007e-02,
+#         3.32798566e-04,  1.49217049e-02, -3.78035464e-04,
+#         4.63256737e-01, -5.84563953e-03, -3.23932733e-02],
+#       [ 5.71525977e-02,  3.00868686e-03,  5.59990262e-03,
+#        -2.36703410e-05,  1.52733656e-02,  2.96584220e-03,
+#        -5.84563953e-03,  7.80863724e-01,  5.67334552e-03],
+#       [-1.17262267e-02,  5.51567679e-02, -1.06701029e-03,
+#        -3.59460134e-04,  2.77549823e-02,  3.02205777e-03,
+#        -3.23932733e-02,  5.67334552e-03,  5.28601392e-02]]))
 
     Kernel    = NUTS
-    HMC       = [NUTS(M, rng = rng[j], mass_matrix = mass_matrix, verbose = verbose, dt = 1e-5) for j in range(n_threads)]
+    HMC       = [NUTS(M, rng = rng[j], verbose = verbose, dt = 0.1) for j in range(n_threads)]
     
-    starting_point = np.array([np.float64(2.970836395983002), np.float64(2.1457700661243417), np.float64(-1.1216815578621249), np.float64(1126259462.4088995), np.float64(32.82289012101475), np.float64(0.8628497064389393), np.float64(-0.4819802030544022), np.float64(1.5720689487945567), np.float64(6.295442867400122)])
+    starting_point = np.array([
+#                               np.float64(2.970836395983002),
+#                               np.float64(2.1457700661243417),
+#                               np.float64(-1.1216815578621249),
+#                               np.float64(1126259462.4088995),
+                               np.float64(32.82289012101475),
+                               np.float64(0.8628497064389393),
+#                               np.float64(-0.4819802030544022),
+#                               np.float64(1.5720689487945567),
+#                               np.float64(6.295442867400122)
+                               ])
     
     samples = [H.sample(starting_point,
                           N=int(n_samps//n_threads),
@@ -498,4 +534,3 @@ if __name__ == '__main__':
         ax.set_ylabel(default_names[i])
     plt.savefig("trace.pdf",bbox_inches='tight')
     
-

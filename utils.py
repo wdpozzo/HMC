@@ -44,12 +44,25 @@ def _GPS2JD(gpstime):
     dot2utc = 2415020.5
     
     # Determine leap seconds
-    if gpstime < 820108814:
-        nleap = 32
-    elif 820108814 <= gpstime < 914803215:
-        nleap = 33
-    else:
-        nleap = 34
+    nleap = jax.lax.cond(
+        gpstime < 820108814,  # Condition (must be a JAX expression)
+        lambda _: 32,  # If True
+        lambda _: 33,   # If False
+        operand=None
+    )
+#    nleap = jax.lax.cond(
+#        820108814 <= gpstime < 914803215,  # Condition (must be a JAX expression)
+#        lambda _: 33,  # If True
+#        lambda _: 34,   # If False
+#        operand=None
+#    )
+
+#    if gpstime < 820108814:
+#        nleap = 32
+#    elif 820108814 <= gpstime < 914803215:
+#        nleap = 33
+#    else:
+#        nleap = 34
 
     dot = dot2gps + (gpstime - (nleap - 19)) / 86400.0
     utc = dot + dot2utc
