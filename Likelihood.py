@@ -13,7 +13,7 @@ from utils import GreenwichMeanSiderealTime
 
 import sys
 import ray
-from utils import TimeDelayFromEarthCenter
+from utils import TimeDelayFromEarthCenter, Masses2McQ
 
 from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
@@ -215,17 +215,19 @@ class GWDetector:
         :return: tuple of float or np.ndarray
             relative amplitudes of hplus and hcross.
         """
+        s2g = jnp.sin(2*g_)
+        c2g = jnp.cos(2*g_)
 
-        a_ = (1/16)*jnp.sin(2*g_)*(3-jnp.cos(2*lat))*(3-jnp.cos(2*dec))*jnp.cos(2*(ra - lst))-\
-             (1/4)*jnp.cos(2*g_)*jnp.sin(lat)*(3-jnp.cos(2*dec))*jnp.sin(2*(ra - lst))+\
-             (1/4)*jnp.sin(2*g_)*jnp.sin(2*lat)*jnp.sin(2*dec)*jnp.cos(ra - lst)-\
-             (1/2)*jnp.cos(2*g_)*jnp.cos(lat)*jnp.sin(2*dec)*jnp.sin(ra - lst)+\
-             (3/4)*jnp.sin(2*g_)*(jnp.cos(lat)**2)*(jnp.cos(dec)**2)
+        a_ = (1/16)*s2g*(3-jnp.cos(2*lat))*(3-jnp.cos(2*dec))*jnp.cos(2*(ra - lst))-\
+             (1/4)*c2g*jnp.sin(lat)*(3-jnp.cos(2*dec))*jnp.sin(2*(ra - lst))+\
+             (1/4)*s2g*jnp.sin(2*lat)*jnp.sin(2*dec)*jnp.cos(ra - lst)-\
+             (1/2)*c2g*jnp.cos(lat)*jnp.sin(2*dec)*jnp.sin(ra - lst)+\
+             (3/4)*s2g*(jnp.cos(lat)**2)*(jnp.cos(dec)**2)
 
-        b_ = jnp.cos(2*g_)*jnp.sin(lat)*jnp.sin(dec)*jnp.cos(2*(ra - lst))+\
-             (1/4)*jnp.sin(2*g_)*(3-jnp.cos(2*lat))*jnp.sin(dec)*jnp.sin(2*(ra - lst))+\
-             jnp.cos(2*g_)*jnp.cos(lat)*jnp.cos(dec)*jnp.cos(ra - lst)+\
-             (1/2)*jnp.sin(2*g_)*jnp.sin(2*lat)*jnp.cos(dec)*jnp.sin(ra - lst)
+        b_ = c2g*jnp.sin(lat)*jnp.sin(dec)*jnp.cos(2*(ra - lst))+\
+             (1/4)*s2g*(3-jnp.cos(2*lat))*jnp.sin(dec)*jnp.sin(2*(ra - lst))+\
+                     c2g*jnp.cos(lat)*jnp.cos(dec)*jnp.cos(ra - lst)+\
+             (1/2)*s2g*jnp.sin(2*lat)*jnp.cos(dec)*jnp.sin(ra - lst)
 
 
         return a_, b_
@@ -236,9 +238,11 @@ class GWDetector:
         h_plus, h_cross = TaylorF2(params, self.Frequency)
         #gmst = np.radians(self.lst_estimate(GPS_time))
         fplus, fcross   = self.antenna_pattern_functions(params)
-        
+        ra = np.float64(2.1457700661243417)
+        dec = np.float64(-1.1216815578621249)
+        tc = np.float64(1126259462.4088995)
 
-        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, params[1], params[2], params[3])
+        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, ra, dec, tc)
         timeshift       = timedelay
         shift           = 2.0*np.pi*self.Frequency*timeshift
 
@@ -269,7 +273,7 @@ class GWDetector:
         ra = np.float64(2.1457700661243417)
         dec =  np.float64(-1.1216815578621249)
         pol = np.float64(1.5720689487945567)
-        tc = np.float64(1126259462.4088995)
+        tc = np.float64(1126259462.423)
 #        ra = params[1]#np.radians(right_ascension)
 #        dec = params[2]#np.radians(declination)
 #
@@ -312,7 +316,7 @@ if __name__ == '__main__':
             self.names  = n
             self.bounds = b
             self.detectors = [GWDetector(det, channel = "GWOSC") for det in detector_names]
-            self.gradient_function = jax.grad(self.potential)
+            self.gradient_function  = jax.grad(self.potential)
             self.metric_function    = jax.hessian(self.potential)
             
         def new_point(self, rng = None):
@@ -355,7 +359,7 @@ if __name__ == '__main__':
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             return logP
     
-        def in_bounds(self,param):
+        def in_bounds(self, param):
             """
             Checks whether param lies within the bounds
 
@@ -387,6 +391,7 @@ if __name__ == '__main__':
             # Then use jnp.sum
             return jnp.sum(log_likelihoods)
 
+        @partial(jax.jit, static_argnums = (0))
         def potential(self, q):
             return -self.log_posterior(q)
             
@@ -432,15 +437,15 @@ if __name__ == '__main__':
 #                      'ra'          : [0.0,2.0*jnp.pi],
 #                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
 #                      'tc'          : [trigtime-0.05,trigtime+0.05],
-                      'mc'          : [1.0,40.0],
-                      'q'           : [0.125,1.0],
+                      'mc'          : [10.0,40.0],
+                      'q'           : [0.5,1.0],
 #                      'costheta_jn' : [-1.0,1.0],
 #                      'psi'         : [0.0,jnp.pi],
 #                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]
                       }
     
     n_threads  = 1
-    n_samps    = 1e3
+    n_samps    = 5e3
     n_train    = 0e3
     e_train    = 0
     adapt_mass = 0
@@ -450,6 +455,28 @@ if __name__ == '__main__':
     rng         = [np.random.default_rng(111+j) for j in range(n_threads)]
 
     M           = RapidPE(default_names, default_bounds, ["H1","L1"])
+    
+#    import matplotlib.pyplot as plt
+#    from mpl_toolkits.mplot3d import Axes3D
+#    fig = plt.figure()
+#    ax = fig.add_subplot(111, projection='3d')
+#    
+#    x, y = np.linspace(default_bounds["mc"][0],default_bounds["mc"][1],101), np.linspace(default_bounds["q"][0],default_bounds["q"][1],101)
+#    
+#    X, Y = np.meshgrid(x,y)
+#    Z    = np.zeros((x.shape[0],y.shape[0]))
+#    for i in range(x.shape[0]):
+#        for j in range(y.shape[0]):
+#            Z[i,j] = M.log_posterior((x[i],y[j]))
+#            print(i,j,x[i],y[j],Z[i,j])
+#
+#    S = ax.plot_surface(X, Y, Z, cmap='viridis')
+#    fig.colorbar(S)
+#    plt.show()
+#    exit()
+    
+    
+    
 #    mass_matrix = np.eye(len(default_names))
 #    
 #    stds = {'phiref'      : 3.13522148e+00,
@@ -499,7 +526,7 @@ if __name__ == '__main__':
 #        -3.23932733e-02,  5.67334552e-03,  5.28601392e-02]]))
 
     Kernel    = NUTS
-    HMC       = [NUTS(M, rng = rng[j], verbose = verbose, dt = 0.1) for j in range(n_threads)]
+    HMC       = [NUTS(M, rng = rng[j], verbose = verbose, dt = 0.3) for j in range(n_threads)]
     
     starting_point = np.array([
 #                               np.float64(2.970836395983002),
@@ -512,7 +539,9 @@ if __name__ == '__main__':
 #                               np.float64(1.5720689487945567),
 #                               np.float64(6.295442867400122)
                                ])
-    
+    print("inverse mass by hand in starting point {} = {}".format(starting_point,
+                                                                jnp.linalg.inv(M.hessian(starting_point))))
+    print("are we getting the identity?", np.dot(jnp.linalg.inv(M.hessian(starting_point)),M.hessian(starting_point)))
     samples = [H.sample(starting_point,
                           N=int(n_samps//n_threads),
                           position=j)

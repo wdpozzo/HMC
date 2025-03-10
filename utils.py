@@ -89,7 +89,44 @@ def TimeDelayFromEarthCenter( lat, lon,  ra,dec,GPS_time,):
     deltaT = -(np.dot(s, d))*EarthRadius/c
     return deltaT
 
+@jax.jit
+def McQ2Masses(mc, q):
+    """
+    | Converts from chirp mass and mass ratio :math:`\\mathcal{M}_c, q` to component masses :math:`m_1, m_2`,
+    | with :math:`m_1 \geq m_2` 
+    
+    :param mc: chirp mass in units of solar masses
+    :type mc: float
+    :param q: mass ratio
+    :type q: float
+    
+    :return: :math:`m_1, m_2` in units of solar masses
+    :rtype: tuple
+    """
+    
+    factor = mc * np.power(1. + q, 1.0/5.0);
+    m1     = factor * np.power(q, -3.0/5.0);
+    m2     = factor * np.power(q, +2.0/5.0);
+    return m1, m2
 
+@jax.jit
+def Masses2McQ(m1, m2):
+    """
+    | Converts from omponent masses :math:`m_1, m_2` (with :math:`m_1 \geq m_2` ) to chirp mass and mass ratio :math:`\\mathcal{M}_c, q` 
+    
+    :param m1: primary mass in units of solar masses
+    :type m1: float
+    :param m2: secondary mass in units of solar masses
+    :type m2: float
+    
+    :return: :math:`\\mathcal{M}_c` (in units of solar masses), :math:`q`
+    :rtype: tuple
+    """
+    
+    q   = m2/m1
+    eta = m1*m2/(m1+m2)
+    mc  = (m1*m2)**(3./5.)/(m1+m2)**(1./5.)
+    return mc, q
 
 
 

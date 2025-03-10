@@ -14,14 +14,33 @@ import jax
 import ray
 from raynest.nest2pos import autocorrelation, acl
 
+@jax.jit
+def make_positive_definite(A):
+    A = (A + A.T) / 2  # Ensure symmetry
+    eigenvalues_, eigenvectors = jnp.linalg.eigh(A)
+    
+    # Replace non-positive eigenvalues with a small positive number
+    eigenvalues = jnp.abs(eigenvalues_)
+    
+    # Reconstruct the matrix
+    A_positive = eigenvectors @ jnp.diag(eigenvalues) @ eigenvectors.T
+    
+    return A_positive
 
 @partial(jax.jit, static_argnums=(0,))
 def compute_mass_matrix(model, q):
     mass_matrix = model.hessian(q)
-    inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
+    inverse_mass_matrix = make_positive_definite(jnp.linalg.inv(mass_matrix))
+#    inverse_mass_matrix_ = jnp.linalg.inv(mass_matrix)
+#    print("inv mass ", inverse_mass_matrix_)
+#    condition = jnp.diag(inverse_mass_matrix_) < 0
+#    print("condition =",condition)
+#    diag_mask = jnp.eye(inverse_mass_matrix_.shape[0], dtype=inverse_mass_matrix_.dtype)
+#    inverse_mass_matrix = inverse_mass_matrix_ * (1 - 2 * diag_mask * condition[:, None])
+#    print("inv mass corrected ", inverse_mass_matrix)
     det = jnp.linalg.det(mass_matrix)
-    return (mass_matrix.T+mass_matrix)/2., (inverse_mass_matrix.T+inverse_mass_matrix)/2., det
-
+#    return (mass_matrix.T+mass_matrix)/2., (inverse_mass_matrix.T+inverse_mass_matrix)/2., det
+    return mass_matrix, inverse_mass_matrix, det
 #
 #@ray.remote
 class NUTS:
@@ -126,8 +145,8 @@ class NUTS:
 
         while sub_accepted < N:
             _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q0)
-#            print("inverse mass = ", inverse_mass_matrix)
-
+#            print("inverse mass = ", inverse_mass_matrix, "q0 = ",q0, "dt = ",self.dt)
+        
             p_ = self.momenta_distribution.rvs()
 #            print("p0 from identity",p_)
             p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix).T,p_)
@@ -362,7 +381,7 @@ if __name__ == "__main__":
      
 #    ray.init()
     
-    dimension = 20
+    dimension = 3
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
