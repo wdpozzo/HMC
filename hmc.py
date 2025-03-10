@@ -66,9 +66,13 @@ class NUTS:
 #        
 #        self.inverse_mass_matrix  = np.linalg.inv(self.mass_matrix)
 #        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
-#        self.momenta_distribution = multivariate_normal(cov=self.mass_matrix, seed = self.rng, allow_singular=True)
+        self.momenta_distribution = multivariate_normal(cov=np.eye(len(self.model.bounds)), seed = self.rng)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
-  
+        
+    @partial(jax.jit, static_argnums = (0))
+    def generalised_momentum(self, p_, q, inverse_mass_matrix):
+        return jnp.dot(inverse_mass_matrix,p_)
+
     @partial(jax.jit, static_argnums = (0))
     def kinetic_energy(self, p, q):
         _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q)
@@ -110,7 +114,7 @@ class NUTS:
         gradH_q = self.hamiltonian_gradient(p, q)
         #print( q)
         #print("generalized leap frog time = ", time.time()-start)
-        print("in the leap frog",jnp.array(p0),jnp.array(q0),jnp.array(p),jnp.array(q))
+#        print("in the leap frog",jnp.array(p0),jnp.array(q0),jnp.array(p),jnp.array(q))
         return p, q
  
     def sample(self, q0, N=1000, n_train = 0, position=0):
@@ -122,13 +126,12 @@ class NUTS:
 
         while sub_accepted < N:
             _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q0)
-            print("inverse mass = ", inverse_mass_matrix)
-            self.momenta_distribution = multivariate_normal(cov=np.eye(len(self.model.names)), seed = self.rng, allow_singular=True)
+#            print("inverse mass = ", inverse_mass_matrix)
 
-            p0 = self.momenta_distribution.rvs()
-            print("p0 from identity",p0)
-            p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix).T,p0)/p0
-            print("p0 correlated",p0)
+            p_ = self.momenta_distribution.rvs()
+#            print("p0 from identity",p_)
+            p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix).T,p_)
+#            print("p0 correlated",p0)
             logP = self.model.log_posterior(q0) - self.kinetic_energy(p0, q0)
             logu = logP - self.rng.exponential()
 
@@ -161,7 +164,7 @@ class NUTS:
                 delta_q = q_r - q_l
                 s = sprime * (np.dot(delta_q, p_l) > 0) * (np.dot(delta_q, p_r) > 0)
                 j += 1
-                print("in the sampling ==>",j)
+#                print("in the sampling ==>",j)
             self.acceptance = sub_accepted / (sub_counter+sub_accepted)
             if sub_accepted < n_train:
                 self.dt, _ = self.step_tuning.update(self.acceptance)
@@ -229,7 +232,7 @@ class NUTS:
         under_lower = q < lower_bounds
 
         reflect_factor = np.where(over_upper | under_lower, -1.0, 1.0)
-        q = np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+        q = np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions|#WRONG!!
         p *= reflect_factor  # Flip momentum for out-of-bound coordinates
 
         # Final momentum update
@@ -239,17 +242,17 @@ class NUTS:
         return p, q
 
     def build_tree(self, p, q, logu, v, j, dt):
-        print("j = ",j, "logu = ",logu)
+#        print("j = ",j, "logu = ",logu)
         if j == 0:
             # Base case: Take one leapfrog step in the direction of v
-            print("before leap frog",p, q)
+#            print("before leap frog",p, q)
             pprime, qprime = self.generalized_leap_frog(v*dt, p, q)
-            print("after leap frog",pprime, qprime)
+#            print("after leap frog",pprime, qprime)
             logH = self.model.log_posterior(qprime)-self.kinetic_energy(pprime, qprime)
 #            print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
             nprime = int(logu <= logH)
             sprime = int(logH > logu - 1000)
-            print("leaf in the tree =",pprime, qprime, pprime, qprime, qprime, nprime, sprime)
+#            print("leaf in the tree =",pprime, qprime, pprime, qprime, qprime, nprime, sprime)
             return pprime, qprime, pprime, qprime, qprime, nprime, sprime
         
         else:
@@ -321,8 +324,7 @@ if __name__ == "__main__":
             self.means  = rng[0].uniform(-5,5,len(n))
             eigs        = rng[0].uniform(1,50,len(n))
             self.gradient_function = jax.grad(self.log_posterior)
-            self.metric_function   = jax.hessian(self.log_posterior)
-            
+            self.metric_function   = jax.hessian(self.log_posterior) # FISHER lambda p: jnp.outer(self.gradient_function(p), self.gradient_function(p))
             if eigs.shape[0] > 1:
                 eigs        = np.array(len(n)*eigs/np.sum(eigs))
                 cov         = random_correlation.rvs(eigs, random_state=rng[0])
@@ -360,7 +362,7 @@ if __name__ == "__main__":
      
 #    ray.init()
     
-    dimension = 2
+    dimension = 20
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
@@ -375,8 +377,8 @@ if __name__ == "__main__":
     rng       = [np.random.default_rng(1111+j) for j in range(n_threads)]
 
     M         = TestModel(names, bounds)
-    HMC       = [NUTS(M, rng = rng[j], verbose = verbose) for j in range(n_threads)]
-    print(HMC)
+    HMC       = [NUTS(M, rng = rng[j], verbose = verbose, dt = 0.3) for j in range(n_threads)]
+
     samples   = np.concatenate([H.sample(rng[j].uniform(-10,10,dimension),
                           N=int(n_samps//n_threads),n_train = n_train//n_threads, 
                           position=j)
