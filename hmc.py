@@ -1,46 +1,7 @@
-import numpy as np
-import jax.numpy as jnp
-#import numpy
-import ray
-#from raynest.proposal import Proposal
-from scipy.stats import multivariate_normal
-from tqdm import tqdm
-from functools import partial
-from collections import deque
-from scipy.special import logsumexp
-import os
-import h5py
-import jax
-import ray
-from raynest.nest2pos import autocorrelation, acl
 
-@jax.jit
-def make_positive_definite(A):
-    A = (A + A.T) / 2  # Ensure symmetry
-    eigenvalues_, eigenvectors = jnp.linalg.eigh(A)
-    
-    # Replace non-positive eigenvalues with a small positive number
-    eigenvalues = jnp.abs(eigenvalues_)
-    
-    # Reconstruct the matrix
-    A_positive = eigenvectors @ jnp.diag(eigenvalues) @ eigenvectors.T
-    
-    return A_positive
 
-@partial(jax.jit, static_argnums=(0,))
-def compute_mass_matrix(model, q):
-    mass_matrix = model.hessian(q)
-    inverse_mass_matrix = make_positive_definite(jnp.linalg.inv(mass_matrix))
-#    inverse_mass_matrix_ = jnp.linalg.inv(mass_matrix)
-#    print("inv mass ", inverse_mass_matrix_)
-#    condition = jnp.diag(inverse_mass_matrix_) < 0
-#    print("condition =",condition)
-#    diag_mask = jnp.eye(inverse_mass_matrix_.shape[0], dtype=inverse_mass_matrix_.dtype)
-#    inverse_mass_matrix = inverse_mass_matrix_ * (1 - 2 * diag_mask * condition[:, None])
-#    print("inv mass corrected ", inverse_mass_matrix)
-    det = jnp.linalg.det(mass_matrix)
-#    return (mass_matrix.T+mass_matrix)/2., (inverse_mass_matrix.T+inverse_mass_matrix)/2., det
-    return mass_matrix, inverse_mass_matrix, det
+
+
 #
 #@ray.remote
 class NUTS:
@@ -87,22 +48,20 @@ class NUTS:
 #        self.logdet               = np.linalg.slogdet(self.mass_matrix)[1]
         self.momenta_distribution = multivariate_normal(cov=np.eye(len(self.model.bounds)), seed = self.rng)
         self.step_tuning = DualAveragingStepSize(initial_step_size=self.dt)
-        
-    @partial(jax.jit, static_argnums = (0))
-    def generalised_momentum(self, p_, q, inverse_mass_matrix):
-        return jnp.dot(inverse_mass_matrix,p_)
 
-    @partial(jax.jit, static_argnums = (0))
+#    @partial(jax.jit, static_argnums = (0))
+#   def kinetic_energy(p, q, inverse_mass_matrix):
+#       return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))
     def kinetic_energy(self, p, q):
         _, inverse_mass_matrix, _ = compute_mass_matrix(self.model, q)
         return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))#-0.5*self.logdet + 0.5*len(p)*np.log(2*np.pi)
     
 
-    @partial(jax.jit, static_argnums = (0))
+#    @partial(jax.jit, static_argnums = (0))
     def hamiltonian(self, p, q):
         return self.kinetic_energy(p, q) + self.model.potential(q)
         
-    @partial(jax.jit, static_argnums = (0))
+#    @partial(jax.jit, static_argnums = (0))
     def hamiltonian_gradient(self, p, q):
         gradH_q = jax.grad(self.hamiltonian, argnums=1)(p, q)
         return gradH_q

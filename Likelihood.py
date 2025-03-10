@@ -22,14 +22,14 @@ from hmc import NUTS
 
 from jax import jit
 
-@jax.jit
+#@jax.jit
 def TaylorF2(params, frequency_array):
     # Extract parameters
-#    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
-    Mc, q = params[0], params[1],
-    phi_c = np.float64(2.970836395983002)
-    logdistance = np.float64(6.295442867400122)
-    costheta_jn = np.float64(-0.4819802030544022)
+    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
+#    Mc, q = params[0], params[1],
+#    phi_c = np.float64(2.970836395983002)
+#    logdistance = np.float64(6.295442867400122)
+#    costheta_jn = np.float64(-0.4819802030544022)
 
     # Compute mass and distance-related terms
     distance = jnp.exp(logdistance)
@@ -115,6 +115,7 @@ class GWDetector:
                  name,
                  datafile           = None,
                  psd_file           = None,
+                 simulation         = False,
                  psd_method         = 'mesa-on-source',
                  T                  = 2.0,
                  starttime          = 1126259461.423,
@@ -196,7 +197,7 @@ class GWDetector:
         self.zeta = self.available_detectors[name][3]
         
     @staticmethod
-    @jit
+#    @jit
     def _ab_factors(g_, lat, ra, dec, lst):
         """
         Method that calculates the amplitude factors of plus and cross
@@ -232,15 +233,15 @@ class GWDetector:
 
         return a_, b_
         
-    @partial(jax.jit, static_argnums = (0))
+#    @partial(jax.jit, static_argnums = (0))
     def project_waveform(self, params):
             #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         h_plus, h_cross = TaylorF2(params, self.Frequency)
         #gmst = np.radians(self.lst_estimate(GPS_time))
         fplus, fcross   = self.antenna_pattern_functions(params)
-        ra = np.float64(2.1457700661243417)
-        dec = np.float64(-1.1216815578621249)
-        tc = np.float64(1126259462.4088995)
+        ra = params[1]
+        dec = params[2]
+        tc = params[3]
 
         timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, ra, dec, tc)
         timeshift       = timedelay
@@ -249,7 +250,7 @@ class GWDetector:
         h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
         return h
         
-    @partial(jax.jit, static_argnums = (0))
+#    @partial(jax.jit, static_argnums = (0))
     def antenna_pattern_functions(self, params):
         '''
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
@@ -270,15 +271,15 @@ class GWDetector:
         :return: tuple of float or np.ndarray
             fplus and fcross.
         '''
-        ra = np.float64(2.1457700661243417)
-        dec =  np.float64(-1.1216815578621249)
-        pol = np.float64(1.5720689487945567)
-        tc = np.float64(1126259462.423)
-#        ra = params[1]#np.radians(right_ascension)
-#        dec = params[2]#np.radians(declination)
-#
-#        pol = params[7]#np.radians(polarization)
-#        tc  = params[3]
+#        ra = np.float64(2.1457700661243417)
+#        dec =  np.float64(-1.1216815578621249)
+#        pol = np.float64(1.5720689487945567)
+#        tc = np.float64(1126259462.423)
+        ra = params[1]#np.radians(right_ascension)
+        dec = params[2]#np.radians(declination)
+
+        pol = params[7]#np.radians(polarization)
+        tc  = params[3]
         lat = jnp.radians(self.latitude)
         g_ = jnp.radians(self.gamma)
         z_ = jnp.radians(self.zeta)
@@ -292,7 +293,7 @@ class GWDetector:
 
         return fplus, fcross
         
-    @partial(jax.jit, static_argnums=(0,))
+#    @partial(jax.jit, static_argnums=(0,))
     def log_likelihood(self, params):
     
         h = self.project_waveform(params)
@@ -340,21 +341,21 @@ if __name__ == '__main__':
             
             return p
         
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def log_prior(self, params):
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
         
             logP = 0.0
-#            logP += 3.0*params[8]
+            logP += 3.0*params[8]
 
             # declination
-#            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
+            logP += jnp.log(jnp.abs(jnp.cos(params[2])))
 
             # chirp mass and mass ratio
-#            mc      = params[4]
-#            q       = params[5]
-            mc      = params[0]
-            q       = params[1]
+            mc      = params[4]
+            q       = params[5]
+#            mc      = params[0]
+#            q       = params[1]
             logP   += jnp.log(mc)
             logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
             return logP
@@ -378,12 +379,12 @@ if __name__ == '__main__':
 #                    return False
             return all(self.bounds[n][0] < param[n] < self.bounds[n][1] for n in param.keys())
         
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def log_posterior(self, params):
             
             return self.log_prior(params) + self.log_likelihood(params)#self.log_prior(params)# +
         
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def log_likelihood(self, params):
             # Ensure the list of log-likelihoods is a JAX array
             log_likelihoods = jnp.array([det.log_likelihood(params) for det in self.detectors])
@@ -391,11 +392,11 @@ if __name__ == '__main__':
             # Then use jnp.sum
             return jnp.sum(log_likelihoods)
 
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def potential(self, q):
             return -self.log_posterior(q)
             
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def gradient(self, params):
             """
             we need to compute for each detector
@@ -411,7 +412,7 @@ if __name__ == '__main__':
 #            return g
             return -self.gradient_function(params)
 
-        @partial(jax.jit, static_argnums = (0))
+#        @partial(jax.jit, static_argnums = (0))
         def hessian(self, params):
             return -self.metric_function(params)
      
@@ -419,29 +420,29 @@ if __name__ == '__main__':
 
     # default parameters' names
     default_names = [
-#                     'phiref',
-#                     'ra',
-#                     'dec',
-#                     'tc',
+                     'phiref',
+                     'ra',
+                     'dec',
+                     'tc',
                      'mc',
                      'q',
-#                     'costheta_jn',
-#                     'psi',
-#                     'logdistance'
+                     'costheta_jn',
+                     'psi',
+                     'logdistance'
                      ]
 
     trigtime = 1126259462.423
     # default prior bounds matching the parameters in self.default_name
     default_bounds = {
-#                      'phiref'      : [0.0,2.0*jnp.pi],
-#                      'ra'          : [0.0,2.0*jnp.pi],
-#                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
-#                      'tc'          : [trigtime-0.05,trigtime+0.05],
+                      'phiref'      : [0.0,2.0*jnp.pi],
+                      'ra'          : [0.0,2.0*jnp.pi],
+                      'dec'         : [-jnp.pi/2.0,jnp.pi/2.0],
+                      'tc'          : [trigtime-0.05,trigtime+0.05],
                       'mc'          : [10.0,40.0],
                       'q'           : [0.5,1.0],
-#                      'costheta_jn' : [-1.0,1.0],
-#                      'psi'         : [0.0,jnp.pi],
-#                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]
+                      'costheta_jn' : [-1.0,1.0],
+                      'psi'         : [0.0,jnp.pi],
+                      'logdistance' : [jnp.log(1.0),jnp.log(2000.0)]
                       }
     
     n_threads  = 1
@@ -529,15 +530,15 @@ if __name__ == '__main__':
     HMC       = [NUTS(M, rng = rng[j], verbose = verbose, dt = 0.3) for j in range(n_threads)]
     
     starting_point = np.array([
-#                               np.float64(2.970836395983002),
-#                               np.float64(2.1457700661243417),
-#                               np.float64(-1.1216815578621249),
-#                               np.float64(1126259462.4088995),
+                               np.float64(2.970836395983002),
+                               np.float64(2.1457700661243417),
+                               np.float64(-1.1216815578621249),
+                               np.float64(1126259462.4088995),
                                np.float64(32.82289012101475),
                                np.float64(0.8628497064389393),
-#                               np.float64(-0.4819802030544022),
-#                               np.float64(1.5720689487945567),
-#                               np.float64(6.295442867400122)
+                               np.float64(-0.4819802030544022),
+                               np.float64(1.5720689487945567),
+                               np.float64(6.295442867400122)
                                ])
     print("inverse mass by hand in starting point {} = {}".format(starting_point,
                                                                 jnp.linalg.inv(M.hessian(starting_point))))
