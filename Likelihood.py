@@ -51,35 +51,35 @@ def in_bounds(param, bounds):
 #                    return False
     return all(bounds[n][0] < param[n] < bounds[n][1] for n in param.keys())
 
-def log_posterior(params, detector_list):
+def log_posterior(params, injection_parameters, detector_list):
     
-    return log_prior(params) + log_likelihood(params, detector_list)#self.log_prior(params)# +
+    return log_prior(params) + log_likelihood(params, injection_parameters, detector_list)#self.log_prior(params)# +
 
 #        @partial(jax.jit, static_argnums = (0))
-def log_likelihood(params, detector_list):
+def log_likelihood(params, injection_parameters, detector_list):
     # Ensure the list of log-likelihoods is a JAX array
-    log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_list])
+    log_likelihoods = jnp.array([single_detector_log_likelihood(params,injection_parameters, det) for det in detector_list])
 
     # Then use jnp.sum
     return jnp.sum(log_likelihoods)
 
-def single_detector_log_likelihood(params, detector_dictionary):
-    h = project_waveform(params, detector_dictionary)
+def single_detector_log_likelihood(params,injection_parameters,  detector_dictionary):
+    h = project_waveform(params,injection_parameters,  detector_dictionary)
     residuals = detector_dictionary["FrequencySeries"] - h
         
     return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
     
-def project_waveform(params, detector_dictionary):
+def project_waveform(params, injection_parameters, detector_dictionary):
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     f = detector_dictionary["Frequency"]
-    h_plus, h_cross = TaylorF2(params, f)
+    h_plus, h_cross = TaylorF2(params,injection_parameters,f)
     #gmst = np.radians(self.lst_estimate(GPS_time))
     latitute  = detector_dictionary["latitude"]
     longitude = detector_dictionary["longitude"]
     gamma     = detector_dictionary["gamma"]
     zeta      = detector_dictionary["zeta"]
     
-    fplus, fcross   = antenna_pattern_functions(params, latitute, longitude, gamma, zeta)
+    fplus, fcross   = antenna_pattern_functions(params, injection_parameters,latitute, longitude, gamma, zeta)
     
     ra = params[1]
     dec = params[2]
@@ -93,7 +93,7 @@ def project_waveform(params, detector_dictionary):
     return h
 
 @partial(jax.jit, static_argnums=(1,2,3,4))
-def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, det_zeta):
+def antenna_pattern_functions(params, injection_parameters, det_latitute, det_longitude, det_gamma, det_zeta):
     '''
     #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     Evaluate the antenna pattern functions.
@@ -117,11 +117,11 @@ def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, de
 #        dec =  np.float64(-1.1216815578621249)
 #        pol = np.float64(1.5720689487945567)
 #        tc = np.float64(1126259462.423)
-    ra = params[1]#np.radians(right_ascension)
-    dec = params[2]#np.radians(declination)
+    ra = injection_parameters[1]#np.radians(right_ascension)
+    dec = injection_parameters[2]#np.radians(declination)
 
-    pol = params[7]#np.radians(polarization)
-    tc  = params[3]
+    pol = injection_parameters[7]#np.radians(polarization)
+    tc  = injection_parameters[3]
     lat = jnp.radians(det_latitute)
     g_ = jnp.radians(det_gamma)
     z_ = jnp.radians(det_zeta)
@@ -181,10 +181,10 @@ def _ab_factors(g_, lat, ra, dec, lst):
 
     return a_, b_
 
-def TaylorF2(params, frequency_array):
+def TaylorF2(params, injection_parameters, frequency_array):
     # Extract parameters
-    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
-#    Mc, q = params[0], params[1],
+    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], injection_parameters[0], injection_parameters[8], injection_parameters[6]
+#    Mc, q = params[0], params[1],  
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
 #    costheta_jn = np.float64(-0.4819802030544022)
@@ -476,7 +476,7 @@ if __name__=="__main__":
                        ])
 
     snr, h_inj = inject_signal_in_noise(q0, detectors[0])
-    logp = jax.jit(partial(log_posterior, detector_list = detectors))
+    logp = jax.jit(partial(log_posterior,q0,detector_list = detectors))
 
     rng = np.random.default_rng(seed = 222)
     n_steps = 1000
