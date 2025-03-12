@@ -22,7 +22,7 @@ from hmc import NUTS
 
 from jax import jit
 
-@jax.jit
+#@jax.jit
 def TaylorF2(params, frequency_array):
     # Extract parameters
 #    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], params[0], params[8], params[6]
@@ -40,12 +40,20 @@ def TaylorF2(params, frequency_array):
     r = distance * pc * 1e6  # Convert to Megaparsec
 
     M = Mc / (nu ** (3 / 5))
-    f_lso = frequency_array[-1] / 2
+    
+    
+   
+    #f_max = (c**3)/(6.*jnp.pi*jnp.sqrt(6.)*G*M)*2
+    f_max = (1/(6*jnp.sqrt(6)*jnp.pi*2))*(c**3)/(G*M)*2
+    
+
+    #frequency_array = jnp.where(frequency_array<f_max, frequency_array, 0)
+
 
     # Precompute terms
     pi_M = G * jnp.pi * M
     v = jnp.power(pi_M * frequency_array, 1/3) / c
-    v_lso = jnp.power(pi_M * f_lso, 1/3) / c
+    
     gamma = jnp.euler_gamma
 
     # Compute amplitude
@@ -83,8 +91,11 @@ def TaylorF2(params, frequency_array):
     cos_iota = jnp.cos(iota)
     cos_iota_sq = cos_iota**2
 
-    h_plus = phase_factor * amp * ((1 + cos_iota_sq) / 2) * exp_phi_plus
-    h_cross = phase_factor * amp * cos_iota * exp_phi_cross
+    h_plus_ = phase_factor * amp * ((1 + cos_iota_sq) / 2) * exp_phi_plus
+    h_cross_ = phase_factor * amp * cos_iota * exp_phi_cross
+    h_plus = jnp.where(frequency_array<f_max, h_plus_, 0)
+    h_cross = jnp.where(frequency_array<f_max, h_cross_, 0)
+
 
     return h_plus, h_cross
 
@@ -116,12 +127,12 @@ class GWDetector:
                  datafile           = None,
                  psd_file           = None,
                  psd_method         = 'mesa-on-source',
-                 T                  = 2.0,
+                 T                  = 10.0,
                  starttime          = 1126259461.423,
                  trigtime           = 1126259462.423,
                  sampling_rate      = 1024.,
-                 flow               = 20,
-                 fhigh              = None,
+                 flow               = 10,
+                 fhigh              = 100,
                  zero_noise         = False,
                  calibration        = None,
                  download_data      = 1,
@@ -309,6 +320,10 @@ if __name__ == '__main__':
     from raynest.model import Model
     from scipy.stats import norm
     from raynest.nest2pos import autocorrelation, acl
+    import sys
+
+
+    
     
     class RapidPE:
         
@@ -446,7 +461,7 @@ if __name__ == '__main__':
     
     n_threads  = 1
     n_samps    = 5e3
-    n_train    = 0e3
+    n_train    = 1e2
     e_train    = 0
     adapt_mass = 0
     verbose    = 1
@@ -544,6 +559,7 @@ if __name__ == '__main__':
     print("are we getting the identity?", np.dot(jnp.linalg.inv(M.hessian(starting_point)),M.hessian(starting_point)))
     samples = [H.sample(starting_point,
                           N=int(n_samps//n_threads),
+                          n_train = n_train,
                           position=j)
                  for j,H in enumerate(HMC)]
     
@@ -562,4 +578,3 @@ if __name__ == '__main__':
         ax.plot(samples[0][:,i],'o-',markersize=2)
         ax.set_ylabel(default_names[i])
     plt.savefig("trace.pdf",bbox_inches='tight')
-    

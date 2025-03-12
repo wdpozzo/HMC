@@ -136,7 +136,7 @@ class NUTS:
 #        print("in the leap frog",jnp.array(p0),jnp.array(q0),jnp.array(p),jnp.array(q))
         return p, q
  
-    def sample(self, q0, N=1000, n_train = 0, position=0):
+    def sample(self, q0, N=1000, n_train = 500, position=0):
     
         chain = np.empty((2*N, len(q0)))  # Preallocate storage for samples
         sub_accepted, sub_counter = 0, 1
@@ -195,6 +195,10 @@ class NUTS:
             sub_counter += 1
             
         samples = chain[:N]  # Only keep accepted samples
+        
+        samples = samples[int(n_train):]
+
+        print(samples, len(samples))
         ACL = np.array([acl(samples[:, i], c=5) for i in range(chain.shape[1])])
 
         thinning = max(int(max(ACL)), 1)
@@ -381,13 +385,13 @@ if __name__ == "__main__":
      
 #    ray.init()
     
-    dimension = 3
+    dimension = 20
     names = ["{}".format(i) for i in range(dimension)]
     bounds = [[-10,10] for _ in names]
     
     n_threads  = 1
     n_samps    = 1e4
-    n_train    = 0*1e3
+    n_train    = 1*1e2
     e_train    = 1
     adapt_mass = 0
     verbose    = 1
