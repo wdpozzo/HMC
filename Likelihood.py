@@ -18,9 +18,174 @@ from utils import TimeDelayFromEarthCenter, Masses2McQ
 from granite.powerspectrum.mesa import psd_onsource
 from granite.noise.noise import load_data
 
-from hmc import NUTS
-
 from jax import jit
+
+def log_prior(params):
+#    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+
+    logP = 0.0
+    logP += 3.0*params[8]
+
+    # declination
+    logP += jnp.log(jnp.abs(jnp.cos(params[2])))
+
+    # chirp mass and mass ratio
+    mc      = params[4]
+    q       = params[5]
+#            mc      = params[0]
+#            q       = params[1]
+    logP   += jnp.log(mc)
+    logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
+    return logP
+
+def in_bounds(param, bounds):
+    """
+    Checks whether param lies within the bounds
+
+    -----------
+    Parameters:
+        param: :obj:`raynest.parameter.LivePoint`
+
+    -----------
+    Return:
+        True: if all dimensions are within the bounds
+        False: otherwise
+    """
+#            for n in param.keys():
+#                print(n,"--",self.bounds[n][0],param[n],self.bounds[n][1])
+#                if not(self.bounds[n][0] < param[n] < self.bounds[n][1]):
+#                    return False
+    return all(bounds[n][0] < param[n] < bounds[n][1] for n in param.keys())
+
+#        @partial(jax.jit, static_argnums = (0))
+def log_posterior(params):
+    
+    return log_prior(params) + log_likelihood(params)#self.log_prior(params)# +
+
+#        @partial(jax.jit, static_argnums = (0))
+def log_likelihood(params, detector_dictionary_list):
+    # Ensure the list of log-likelihoods is a JAX array
+    log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_dictionary_list.keys()])
+
+    # Then use jnp.sum
+    return jnp.sum(log_likelihoods)
+
+def single_detector_log_likelihood(params, detector_dictionary):
+    h = project_waveform(params, detector_dictionary)
+    residuals = detector_dictionary["frequency_series"] - h
+        
+    return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
+    
+#    det_latitute, det_longitude, det_gamma, det_zeta
+def project_waveform(params, frequency_array, detector_dictionary):
+        #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+    h_plus, h_cross = TaylorF2(params, frequency_array)
+    #gmst = np.radians(self.lst_estimate(GPS_time))
+    latitute  = detector_dictionary["latitude"]
+    longitude = detector_dictionary["longitude"]
+    gamma     = detector_dictionary["gamma"]
+    zeta      = detector_dictionary["zeta"]
+    
+    fplus, fcross   = antenna_pattern_functions(params, latitute, longitude, gamma, zeta)
+    
+    ra = params[1]
+    dec = params[2]
+    tc = params[3]
+
+    timedelay       = TimeDelayFromEarthCenter(latitute, longitude, ra, dec, tc)
+    timeshift       = timedelay
+    shift           = 2.0*np.pi*frequency_array*timeshift
+
+    h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
+    return h
+
+def antenna_pattern_functions(self, params, det_latitute, det_longitude, det_gamma, det_zeta):
+    '''
+    #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+    Evaluate the antenna pattern functions.
+
+    :param right_ascension: float
+        Right ascension of the source in degree.
+
+    :param declination: float
+        Declination of the source in degree.
+
+    :param polarization: float
+        Polarization angle of the wave in degree.
+
+    :param GPS_time: float, int, list or np.ndarray
+        time of arrival of the source signal.
+
+    :return: tuple of float or np.ndarray
+        fplus and fcross.
+    '''
+#        ra = np.float64(2.1457700661243417)
+#        dec =  np.float64(-1.1216815578621249)
+#        pol = np.float64(1.5720689487945567)
+#        tc = np.float64(1126259462.423)
+    ra = params[1]#np.radians(right_ascension)
+    dec = params[2]#np.radians(declination)
+
+    pol = params[7]#np.radians(polarization)
+    tc  = params[3]
+    lat = jnp.radians(det_latitute)
+    g_ = jnp.radians(det_gamma)
+    z_ = jnp.radians(det_zeta)
+    gmst = jnp.mod(GreenwichMeanSiderealTime(tc), 2*jnp.pi)
+    lst = gmst + jnp.radians(det_longitude)
+    ampl11, ampl12 = _ab_factors(g_, lat, ra, dec, lst)
+
+    c2pol = jnp.cos(2*pol)
+    s2pol = jnp.sin(2*pol)
+    
+    fplus = jnp.sin(z_)*(ampl11*c2pol + ampl12*s2pol)
+    fcross = jnp.sin(z_)*(ampl12*c2pol - ampl11*s2pol)
+
+    return fplus, fcross
+
+
+def _ab_factors(g_, lat, ra, dec, lst):
+    """
+    Method that calculates the amplitude factors of plus and cross
+    polarization in the wave projection on the detector.
+    :param g_: float
+        this represent the orientation of the detector's arms with respect to local geographical direction, in
+        rad. It is measured counterclock-wise from East to the bisector of the interferometer arms.
+    :param lat: float
+        longitude of the detector in rad.
+    :param ra: float
+        Right ascension of the source in rad.
+    :param dec: float
+        Declination of the source in rad.
+    :param lst: float or ndarray
+        Local sidereal time(s) in rad.
+    :return: tuple of float or np.ndarray
+        relative amplitudes of hplus and hcross.
+    """
+    s2g = jnp.sin(2*g_)
+    c2g = jnp.cos(2*g_)
+    cdec  = jnp.cos(dec)
+    sdec  = jnp.sin(dec)
+    c2dec = jnp.cos(2*dec)
+    s2dec = jnp.sin(2*dec)
+    clat  = jnp.cos(lat)
+    slat  = jnp.sin(lat)
+    c2lat = jnp.cos(2*lat)
+    s2lat = jnp.sin(2*lat)
+    
+    a_ = (1/16)*s2g*(3-c2lat)*(3-c2dec*jnp.cos(2*(ra - lst))-\
+         (1/4)*c2g*slat*(3-c2dec*jnp.sin(2*(ra - lst))+\
+         (1/4)*s2g*s2lat*s2dec*jnp.cos(ra - lst)-\
+         (1/2)*c2g*clat*s2dec*jnp.sin(ra - lst)+\
+         (3/4)*s2g*(clat**2)*(cdec**2)
+
+    b_ = c2g*slat*sdec*jnp.cos(2*(ra - lst))+\
+         (1/4)*s2g*(3-c2lat)*sdec*jnp.sin(2*(ra - lst))+\
+                 c2g*clat*cdec*jnp.cos(ra - lst)+\
+         (1/2)*s2g*s2lat*cdec*jnp.sin(ra - lst)
+
+
+    return a_, b_
 
 #@jax.jit
 def TaylorF2(params, frequency_array):
@@ -195,112 +360,6 @@ class GWDetector:
         self.longitude = self.available_detectors[name][1]
         self.gamma = self.available_detectors[name][2]
         self.zeta = self.available_detectors[name][3]
-        
-    @staticmethod
-#    @jit
-    def _ab_factors(g_, lat, ra, dec, lst):
-        """
-        Method that calculates the amplitude factors of plus and cross
-        polarization in the wave projection on the detector.
-        :param g_: float
-            this represent the orientation of the detector's arms with respect to local geographical direction, in
-            rad. It is measured counterclock-wise from East to the bisector of the interferometer arms.
-        :param lat: float
-            longitude of the detector in rad.
-        :param ra: float
-            Right ascension of the source in rad.
-        :param dec: float
-            Declination of the source in rad.
-        :param lst: float or ndarray
-            Local sidereal time(s) in rad.
-        :return: tuple of float or np.ndarray
-            relative amplitudes of hplus and hcross.
-        """
-        s2g = jnp.sin(2*g_)
-        c2g = jnp.cos(2*g_)
-
-        a_ = (1/16)*s2g*(3-jnp.cos(2*lat))*(3-jnp.cos(2*dec))*jnp.cos(2*(ra - lst))-\
-             (1/4)*c2g*jnp.sin(lat)*(3-jnp.cos(2*dec))*jnp.sin(2*(ra - lst))+\
-             (1/4)*s2g*jnp.sin(2*lat)*jnp.sin(2*dec)*jnp.cos(ra - lst)-\
-             (1/2)*c2g*jnp.cos(lat)*jnp.sin(2*dec)*jnp.sin(ra - lst)+\
-             (3/4)*s2g*(jnp.cos(lat)**2)*(jnp.cos(dec)**2)
-
-        b_ = c2g*jnp.sin(lat)*jnp.sin(dec)*jnp.cos(2*(ra - lst))+\
-             (1/4)*s2g*(3-jnp.cos(2*lat))*jnp.sin(dec)*jnp.sin(2*(ra - lst))+\
-                     c2g*jnp.cos(lat)*jnp.cos(dec)*jnp.cos(ra - lst)+\
-             (1/2)*s2g*jnp.sin(2*lat)*jnp.cos(dec)*jnp.sin(ra - lst)
-
-
-        return a_, b_
-        
-#    @partial(jax.jit, static_argnums = (0))
-    def project_waveform(self, params):
-            #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
-        h_plus, h_cross = TaylorF2(params, self.Frequency)
-        #gmst = np.radians(self.lst_estimate(GPS_time))
-        fplus, fcross   = self.antenna_pattern_functions(params)
-        ra = params[1]
-        dec = params[2]
-        tc = params[3]
-
-        timedelay       = TimeDelayFromEarthCenter(self.latitude, self.longitude, ra, dec, tc)
-        timeshift       = timedelay
-        shift           = 2.0*np.pi*self.Frequency*timeshift
-
-        h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
-        return h
-        
-#    @partial(jax.jit, static_argnums = (0))
-    def antenna_pattern_functions(self, params):
-        '''
-        #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
-        Evaluate the antenna pattern functions.
-
-        :param right_ascension: float
-            Right ascension of the source in degree.
-
-        :param declination: float
-            Declination of the source in degree.
-
-        :param polarization: float
-            Polarization angle of the wave in degree.
-
-        :param GPS_time: float, int, list or np.ndarray
-            time of arrival of the source signal.
-
-        :return: tuple of float or np.ndarray
-            fplus and fcross.
-        '''
-#        ra = np.float64(2.1457700661243417)
-#        dec =  np.float64(-1.1216815578621249)
-#        pol = np.float64(1.5720689487945567)
-#        tc = np.float64(1126259462.423)
-        ra = params[1]#np.radians(right_ascension)
-        dec = params[2]#np.radians(declination)
-
-        pol = params[7]#np.radians(polarization)
-        tc  = params[3]
-        lat = jnp.radians(self.latitude)
-        g_ = jnp.radians(self.gamma)
-        z_ = jnp.radians(self.zeta)
-        gmst = jnp.mod(GreenwichMeanSiderealTime(tc), 2*jnp.pi)
-        lst = gmst + jnp.radians(self.longitude)
-        ampl11, ampl12 = self._ab_factors(g_, lat, ra, dec, lst)
-
-        
-        fplus = jnp.sin(z_)*(ampl11*jnp.cos(2*pol) + ampl12*jnp.sin(2*pol))
-        fcross = jnp.sin(z_)*(ampl12*jnp.cos(2*pol) - ampl11*jnp.sin(2*pol))
-
-        return fplus, fcross
-        
-#    @partial(jax.jit, static_argnums=(0,))
-    def log_likelihood(self, params):
-    
-        h = self.project_waveform(params)
-        
-        residuals = self.FrequencySeries - h
-        
-        return -self.TwoDeltaTOverN*jnp.vdot(residuals, residuals/self.sigmasq).real
     
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
