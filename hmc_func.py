@@ -9,6 +9,7 @@ from functools import partial
 from collections import deque
 from scipy.special import logsumexp
 import os
+import sys
 import h5py
 import jax
 import ray
@@ -54,7 +55,9 @@ def generalized_leap_frog(log_probability, step_size, p0, q0):
 
     _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
     
-    jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
+    #jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
+
+
     
     for f in range(f_max):
         DH = -nablaH(p, q, inverse_mass_matrix, log_probability)
@@ -143,7 +146,7 @@ if __name__=="__main__":
     from tqdm import tqdm
 
     _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-
+    print(inverse_mass_matrix_0)
     pbar = tqdm(total = n_steps)
     
     i = 0

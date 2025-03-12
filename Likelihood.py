@@ -16,7 +16,7 @@ import sys
 
 def log_prior(params):
 #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
-
+ 
     logP = 0.0
     logP += 3.0*params[8]
 
@@ -51,35 +51,35 @@ def in_bounds(param, bounds):
 #                    return False
     return all(bounds[n][0] < param[n] < bounds[n][1] for n in param.keys())
 
-def log_posterior(params, injection_parameters, detector_list):
+def log_posterior(params, detector_list):
     
-    return log_prior(params) + log_likelihood(params, injection_parameters, detector_list)#self.log_prior(params)# +
+    return  log_likelihood(params, detector_list)#self.log_prior(params)# +log_prior(params) +
 
 #        @partial(jax.jit, static_argnums = (0))
-def log_likelihood(params, injection_parameters, detector_list):
+def log_likelihood(params, detector_list):
     # Ensure the list of log-likelihoods is a JAX array
-    log_likelihoods = jnp.array([single_detector_log_likelihood(params,injection_parameters, det) for det in detector_list])
+    log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_list])
 
     # Then use jnp.sum
     return jnp.sum(log_likelihoods)
 
-def single_detector_log_likelihood(params,injection_parameters,  detector_dictionary):
-    h = project_waveform(params,injection_parameters,  detector_dictionary)
+def single_detector_log_likelihood(params, detector_dictionary):
+    h = project_waveform(params, detector_dictionary)
     residuals = detector_dictionary["FrequencySeries"] - h
         
     return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
     
-def project_waveform(params, injection_parameters, detector_dictionary):
+def project_waveform(params, detector_dictionary):
         #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     f = detector_dictionary["Frequency"]
-    h_plus, h_cross = TaylorF2(params,injection_parameters,f)
+    h_plus, h_cross = TaylorF2(params, f)
     #gmst = np.radians(self.lst_estimate(GPS_time))
     latitute  = detector_dictionary["latitude"]
     longitude = detector_dictionary["longitude"]
     gamma     = detector_dictionary["gamma"]
     zeta      = detector_dictionary["zeta"]
     
-    fplus, fcross   = antenna_pattern_functions(params, injection_parameters,latitute, longitude, gamma, zeta)
+    fplus, fcross   = antenna_pattern_functions(params, latitute, longitude, gamma, zeta)
     
     ra = params[1]
     dec = params[2]
@@ -93,7 +93,7 @@ def project_waveform(params, injection_parameters, detector_dictionary):
     return h
 
 @partial(jax.jit, static_argnums=(1,2,3,4))
-def antenna_pattern_functions(params, injection_parameters, det_latitute, det_longitude, det_gamma, det_zeta):
+def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, det_zeta):
     '''
     #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     Evaluate the antenna pattern functions.
@@ -117,11 +117,14 @@ def antenna_pattern_functions(params, injection_parameters, det_latitute, det_lo
 #        dec =  np.float64(-1.1216815578621249)
 #        pol = np.float64(1.5720689487945567)
 #        tc = np.float64(1126259462.423)
-    ra = injection_parameters[1]#np.radians(right_ascension)
-    dec = injection_parameters[2]#np.radians(declination)
 
-    pol = injection_parameters[7]#np.radians(polarization)
-    tc  = injection_parameters[3]
+
+
+    ra = np.float64(2.1457700661243417)#np.radians(right_ascension)
+    dec = np.float64(-1.1216815578621249)#np.radians(declination)
+
+    pol = np.float64(1.5720689487945567)#np.radians(polarization)
+    tc  = np.float64(1126259462.4088995)
     lat = jnp.radians(det_latitute)
     g_ = jnp.radians(det_gamma)
     z_ = jnp.radians(det_zeta)
@@ -181,10 +184,12 @@ def _ab_factors(g_, lat, ra, dec, lst):
 
     return a_, b_
 
-def TaylorF2(params, injection_parameters, frequency_array):
+def TaylorF2(params, frequency_array):
     # Extract parameters
-    Mc, q, phi_c, logdistance, costheta_jn = params[4], params[5], injection_parameters[0], injection_parameters[8], injection_parameters[6]
-#    Mc, q = params[0], params[1],  
+
+      
+    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(5.295442867400122), np.float64(-0.4819802030544022)
+#    Mc, q = params[0], params[1],
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
 #    costheta_jn = np.float64(-0.4819802030544022)
@@ -463,25 +468,32 @@ if __name__=="__main__":
 
     detectors = detector_constructor(["H1"], channel =None)
     
-    q0 = np.array([
+    q_inj = np.array([
+                        np.float64(28.2289012101475),
+                       np.float64(0.8628497064389393),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
-                       np.float64(2.82289012101475),
-                       np.float64(0.8628497064389393),
+                      
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
                        np.float64(5.295442867400122)
                        ])
+    
+    q0 = np.array([
+                       np.float64(27.2289012101475),
+                       np.float64(0.728497064389393),
 
-    snr, h_inj = inject_signal_in_noise(q0, detectors[0])
-    logp = jax.jit(partial(log_posterior,q0,detector_list = detectors))
+                       ])
+
+    snr, h_inj = inject_signal_in_noise(q_inj, detectors[0])
+    logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     rng = np.random.default_rng(seed = 222)
-    n_steps = 1000
+    n_steps = 5000
     n_leaps = 10
-    step_size = 0.00001
+    step_size = 20
     
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
@@ -491,7 +503,7 @@ if __name__=="__main__":
     from hmc_func import compute_mass_matrix, generalized_leap_frog, hamiltonian
 
     _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-
+    print(inverse_mass_matrix_0, q0)
     pbar = tqdm(total = n_steps)
     
     i = 0
@@ -502,9 +514,10 @@ if __name__=="__main__":
         counter += 1
         print(counter, i, np.linalg.slogdet(inverse_mass_matrix_0))
         p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
-        
+        logp0 = jax.jit(partial(log_posterior, detector_list = detectors))
+        p_, q_, = p0, q0
         for k in range(n_leaps):
-            p_, q_, g_ = generalized_leap_frog(logp, step_size, p0, q0)
+            p_, q_, g_ = generalized_leap_frog(logp, step_size, p_, q_)
             print(k," ==>", p_, q_, g_)
         alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
 #        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
@@ -513,6 +526,7 @@ if __name__=="__main__":
             p0, q0, inverse_mass_matrix_0 = ps[i], qs[i], gs[i]
             i += 1
             pbar.update(1)
+            pbar.set_postfix({"acceptance":(i/counter)})
     
     
     qs = qs[int(len(qs)/2):]
@@ -522,3 +536,11 @@ if __name__=="__main__":
     thinning = int(max([acl(q) for q in qs.T]))
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
+
+    from corner import corner
+    corner(qs,
+                        
+                        quantiles=[0.05, 0.5, 0.95],
+                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
+    import matplotlib.pyplot as plt
+    plt.show()
