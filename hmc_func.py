@@ -111,34 +111,73 @@ def build_tree(p, q, logu, v, j, dt, log_probability, rng):
 
 if __name__=="__main__":
     
-    n_steps = 10000
-    q = np.random.uniform(-5,5,size=2)
-    step_size = 1
+    rng = np.random.default_rng(seed = 222)
+    n_steps = 100000
+    n_leaps = 10
+    q0 = rng.uniform(-5,5,size=2)
     
-    @jax.jit
-    def log_posterior(q):
-        return -0.5*jnp.sum(q**2)
+    from scipy.stats import random_correlation
     
-    ps = np.zeros((n_steps,q.shape[0]))
+    eigs        = rng.uniform(1,50,len(q0))
+    eigs        = np.array(len(q0)*eigs/np.sum(eigs))
+    cov         = random_correlation.rvs(eigs, random_state=rng)
+    inv_cov     = np.linalg.inv(cov)
+
+    
+    step_size = .1
+    data  = rng.uniform(-5,5,size=2)
+    
+    def log_posterior(q, data, inv_cov):
+        r = (data - q)
+        return -0.5*jnp.dot(r.T,jnp.dot(inv_cov,r))
+    
+    
+    logp = partial(log_posterior, data=data, inv_cov=inv_cov)
+    
+    ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
-    gs = np.zeros((n_steps,q.shape[0],q.shape[0]))
+    gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
 
     from tqdm import tqdm
 
-    for i in tqdm(range(n_steps)):
-        p0 = np.random.normal(size=q.shape[0])
-        ps[i], qs[i], gs[i] = generalized_leap_frog(log_posterior, step_size, p0, q)
+    _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
+
+    pbar = tqdm(total = n_steps)
     
-    print("ACL = {}".format([acl(q) for q in qs.T]))
-    x = np.linspace(-30,30,101)
-    y = np.linspace(-30,30,101)
-    Z = np.array([log_posterior(np.array([xi,yi])) for xi in x for yi in y]).reshape(x.shape[0],y.shape[0])
+    i = 0
+    
+    while i < n_steps:
+    
+        p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
+        
+        for _ in range(n_leaps):
+            p_, q_, g_ = generalized_leap_frog(logp, step_size, p0, q0)
+            
+        alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
+#        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
+        if alpha > np.log(rng.uniform()):
+            ps[i], qs[i], gs[i] = p_, q_, g_
+            p0, q0, inverse_mass_matrix_0 = ps[i], qs[i], gs[i]
+            i += 1
+            pbar.update(1)
+    
+    
+    qs = qs[int(len(qs)/2):]
+    thinning = int(max([acl(q) for q in qs.T]))
+    print("ACL = {}".format(thinning))
+    qs = qs[::thinning]
+    x = np.linspace(-5,5,101)
+    y = np.linspace(-5,5,101)
+    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
     X, Y = np.meshgrid(x,y)
+    
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax  = fig.add_subplot(111)
     ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+    ax.axvline(data[0])
+    ax.axhline(data[1])
     C = ax.contour(X, Y, Z, 10)
     fig.colorbar(C)
     plt.show()
