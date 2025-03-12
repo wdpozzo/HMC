@@ -476,16 +476,12 @@ if __name__=="__main__":
                        ])
 
     snr, h_inj = inject_signal_in_noise(q0, detectors[0])
-    import matplotlib.pyplot as plt
-    plt.plot(detectors[0]['Frequency'],detectors[0]["FrequencySeries"])
-    plt.show()
-    
     logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     rng = np.random.default_rng(seed = 222)
     n_steps = 1000
     n_leaps = 10
-    step_size = 0.001
+    step_size = 0.00001
     
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
@@ -507,9 +503,9 @@ if __name__=="__main__":
         print(counter, i, np.linalg.slogdet(inverse_mass_matrix_0))
         p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
         
-        for _ in range(n_leaps):
+        for k in range(n_leaps):
             p_, q_, g_ = generalized_leap_frog(logp, step_size, p0, q0)
-            
+            print(k," ==>", p_, q_, g_)
         alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
 #        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
         if alpha > np.log(rng.uniform()):

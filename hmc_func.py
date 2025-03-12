@@ -53,7 +53,9 @@ def generalized_leap_frog(log_probability, step_size, p0, q0):
     hessV  = jax.hessian(log_probability)
 
     _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
-
+    
+    jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
+    
     for f in range(f_max):
         DH = -nablaH(p, q, inverse_mass_matrix, log_probability)
         p -= 0.5 * step_size * DH
