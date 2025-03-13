@@ -145,8 +145,7 @@ class NUTS:
 #                print("in the sampling ==>",j)
             self.acceptance = sub_accepted / (sub_counter+sub_accepted)
             if sub_accepted < n_train:
-                self.dt, _ = self.step_tuning.update(self.acceptance)
-                progress_bar_sampling.set_postfix({"dt": f"{self.dt:.3f}"})
+                 
 
             if self.verbose and sub_counter % 10 == 0:  # Update less frequently for efficiency
                 progress_bar_sampling.set_postfix({"acceptance rate": f"{self.acceptance:.3f}"})
