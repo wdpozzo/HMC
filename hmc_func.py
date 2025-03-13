@@ -32,10 +32,10 @@ def make_positive_definite(A):
 def kinetic_energy(p, inverse_mass_matrix):
     return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))
 
-#@partial(jax.jit, static_argnums = (0))
+@partial(jax.jit, static_argnums = (0))
 def compute_mass_matrix(hessian, q):
     mass_matrix = -hessian(q)
-    inverse_mass_matrix = make_positive_definite(jnp.linalg.inv(mass_matrix))
+    inverse_mass_matrix = jnp.linalg.inv(make_positive_definite(mass_matrix))
     det = jnp.linalg.det(mass_matrix)
     return mass_matrix, inverse_mass_matrix, det
 
@@ -55,10 +55,10 @@ def generalized_leap_frog(log_probability, step_size, p0, q0):
 
     _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
     
-    #jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
-
-
+#    jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
     
+#    jax.debug.print("det sign {det} at these coordinates {p0} {q0}", det=jnp.linalg.slogdet(inverse_mass_matrix)[0], p0=p0, q0=q0)
+        
     for f in range(f_max):
         DH = -nablaH(p, q, inverse_mass_matrix, log_probability)
         p -= 0.5 * step_size * DH
@@ -76,6 +76,7 @@ def generalized_leap_frog(log_probability, step_size, p0, q0):
     gradH_q = -nablaH(p, q, inverse_mass_matrix, log_probability)
     p -= 0.5 * step_size * gradH_q
 
+#    jax.debug.print("returning {p} {q} {inv}", p=p, q=q, inv=inverse_mass_matrix)
     return p, q, inverse_mass_matrix
     
 def build_tree(p, q, logu, v, j, dt, log_probability, rng):

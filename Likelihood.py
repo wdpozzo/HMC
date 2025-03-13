@@ -18,16 +18,16 @@ def log_prior(params):
 #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
  
     logP = 0.0
-    logP += 3.0*params[8]
-
-    # declination
-    logP += jnp.log(jnp.abs(jnp.cos(params[2])))
+#    logP += 3.0*params[8]
+#
+#    # declination
+#    logP += jnp.log(jnp.abs(jnp.cos(params[2])))
 
     # chirp mass and mass ratio
-    mc      = params[4]
-    q       = params[5]
-#            mc      = params[0]
-#            q       = params[1]
+#    mc      = params[4]
+#    q       = params[5]
+    mc      = params[0]
+    q       = params[1]
     logP   += jnp.log(mc)
     logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
     return logP
@@ -53,7 +53,7 @@ def in_bounds(param, bounds):
 
 def log_posterior(params, detector_list):
     
-    return  log_likelihood(params, detector_list)#self.log_prior(params)# +log_prior(params) +
+    return  log_prior(params) #log_likelihood(params, detector_list)#self.log_prior(params)# +log_prior(params) +
 
 #        @partial(jax.jit, static_argnums = (0))
 def log_likelihood(params, detector_list):
@@ -70,7 +70,7 @@ def single_detector_log_likelihood(params, detector_dictionary):
     return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
     
 def project_waveform(params, detector_dictionary):
-        #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+        #    default_names = ['mc','q','phiref','ra','dec','tc','costheta_jn','psi','logdistance']
     f = detector_dictionary["Frequency"]
     h_plus, h_cross = TaylorF2(params, f)
     #gmst = np.radians(self.lst_estimate(GPS_time))
@@ -81,9 +81,9 @@ def project_waveform(params, detector_dictionary):
     
     fplus, fcross   = antenna_pattern_functions(params, latitute, longitude, gamma, zeta)
     
-    ra = params[1]
-    dec = params[2]
-    tc = params[3]
+    ra = params[3]
+    dec = params[4]
+    tc = params[5]
 
     timedelay       = TimeDelayFromEarthCenter(latitute, longitude, ra, dec, tc)
     timeshift       = timedelay
@@ -188,7 +188,7 @@ def TaylorF2(params, frequency_array):
     # Extract parameters
 
       
-    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(5.295442867400122), np.float64(-0.4819802030544022)
+    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(7.005442867400122), np.float64(-0.4819802030544022)
 #    Mc, q = params[0], params[1],
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
@@ -400,6 +400,35 @@ def check_antenna_pattern(name):
     plt.show()
     return
 
+def check_mass_prior():
+
+    from hmc_func import compute_mass_matrix
+
+    x = np.linspace(5.0,40.0, 100)
+    y = np.linspace(0.125,1.0, 100)
+    Z = np.zeros((x.shape[0],y.shape[0]))
+    
+    detectors = detector_constructor(["H1"], channel =None)
+    logL = jax.jit(partial(log_likelihood, detector_list = detectors))
+    H = jax.hessian(logL)
+    
+    from tqdm import tqdm
+    
+    for i in tqdm(range(x.shape[0])):
+        for j in range(y.shape[0]):
+            params = np.hstack((x[i],y[j]))
+            Z[i,j] = logL(params)
+#            print("{} {} mc = {} q = {} H = {} invM = {}".format(i,j,x[i],y[j], np.linalg.inv(H(params)), compute_mass_matrix(H, params)[1]))
+
+    X, Y = np.meshgrid(x, y)
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax  = fig.add_subplot(111)
+    C = ax.contour(X, Y, Z.T, 100)
+    fig.colorbar(C)
+    plt.show()
+    return
+
 def check_waveform_projection(name):
     params = np.array([
                        np.float64(2.970836395983002),
@@ -440,18 +469,18 @@ def detector_constructor(names, channel = None):
 
 def inject_signal_in_noise(params,
                            detector_dictionary):
-        
-        h = project_waveform(params, detector_dictionary)
-        
-        # add to the detector noise
-        detector_dictionary["FrequencySeries"] += h
-        
-        # signal-to-noise ratio
-        SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
-        
-        sys.stdout.write('\nInjected SNR = %.2f' %(SNR))
-        
-        return SNR, h
+
+    h = project_waveform(params, detector_dictionary)
+    
+    # add to the detector noise
+    detector_dictionary["FrequencySeries"] += h
+    
+    # signal-to-noise ratio
+    SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
+    
+    sys.stdout.write('\nInjected SNR = %.2f' %(SNR))
+    
+    return SNR, h
 
 
 
@@ -465,7 +494,8 @@ if __name__=="__main__":
         'ET': [40.44, 9.4566, 116.5, 60.], # Sardinia site hypothesis
         'K': [36.41, 137.30, 15.36, 90.]
     }
-
+    check_mass_prior()
+    exit()
     detectors = detector_constructor(["H1"], channel =None)
     
     q_inj = np.array([
@@ -478,7 +508,7 @@ if __name__=="__main__":
                       
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(5.295442867400122)
+                       np.float64(7.005442867400122)
                        ])
     
     q0 = np.array([
@@ -491,9 +521,9 @@ if __name__=="__main__":
     logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     rng = np.random.default_rng(seed = 222)
-    n_steps = 5000
-    n_leaps = 10
-    step_size = 20
+    n_steps = 10000
+    n_leaps = 20
+    step_size = 0.001
     
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
@@ -503,8 +533,9 @@ if __name__=="__main__":
     from hmc_func import compute_mass_matrix, generalized_leap_frog, hamiltonian
 
     _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-    print(inverse_mass_matrix_0, q0)
     pbar = tqdm(total = n_steps)
+    
+    print("initial inverse mass matrix = ", inverse_mass_matrix_0)
     
     i = 0
     counter = 0
@@ -512,13 +543,12 @@ if __name__=="__main__":
     while i < n_steps:
     
         counter += 1
-        print(counter, i, np.linalg.slogdet(inverse_mass_matrix_0))
         p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
-        logp0 = jax.jit(partial(log_posterior, detector_list = detectors))
+#        logp0 = jax.jit(partial(log_posterior, detector_list = detectors))
         p_, q_, = p0, q0
         for k in range(n_leaps):
             p_, q_, g_ = generalized_leap_frog(logp, step_size, p_, q_)
-            print(k," ==>", p_, q_, g_)
+            
         alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
 #        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
         if alpha > np.log(rng.uniform()):
@@ -529,7 +559,8 @@ if __name__=="__main__":
             pbar.set_postfix({"acceptance":(i/counter)})
     
     
-    qs = qs[int(len(qs)/2):]
+    burnin = 0 #int(len(qs)/2)
+    qs = qs[burnin:]
     
     from raynest.nest2pos import autocorrelation, acl
     
@@ -538,9 +569,23 @@ if __name__=="__main__":
     qs = qs[::thinning]
 
     from corner import corner
-    corner(qs,
+    corner(qs, quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
                         
-                        quantiles=[0.05, 0.5, 0.95],
-                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     import matplotlib.pyplot as plt
+    
+    x = np.linspace(25, 35, 101)
+    y = np.linspace(0.5, 1.0, 101)
+    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
+
+    X, Y = np.meshgrid(x,y)
+    
+    fig = plt.figure()
+    ax  = fig.add_subplot(111)
+    ax.axvline(q_inj[0])
+    ax.axhline(q_inj[1])
+    C = ax.contour(X, Y, Z, 10)
+    ax.scatter(qs[:,0], qs[:,1], s=2, alpha=0.5)
+    fig.colorbar(C)
+    plt.show()
+    exit()
     plt.show()
