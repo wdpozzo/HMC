@@ -592,80 +592,26 @@ if __name__=="__main__":
 
 #    print(logp(q0))
     rng = np.random.default_rng(seed = 222)
-    n_steps = 1000
-    n_leaps = 10
+    n_steps = 50000
     step_size = 3
     
-    ps = np.zeros((n_steps,q0.shape[0]))
-    qs = np.zeros_like(ps)
-    gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
+    from hmc_func import run_nuts_rmhmc
+    
+    qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
 
-    from tqdm import tqdm
-    from hmc_func import compute_mass_matrix, generalized_leap_frog, hamiltonian
 
-    _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-    pbar = tqdm(total = n_steps)
-    
-    print("initial inverse mass matrix = ", inverse_mass_matrix_0)
-    
-    i = 0
-    counter = 0
-    
-    while i < n_steps:
-    
-        counter += 1
-        
-        try:
-            p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
-        except:
-            p0 = rng.normal(size=q0.shape[0])
-            print("i fucked up")
-        
-        p_, q_ = p0, q0
-        for k in range(n_leaps):
-#            print('before = ',q_, 'p =',p_)
-            
-            p_, q_, g_ = generalized_leap_frog(logp, step_size, p_, q_)
-            
-#            print('after = ',q_, 'p =',p_)
-            
-        alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
-#        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
-        if alpha > np.log(rng.uniform()):
-            ps[i], qs[i], gs[i] = p_, q_, g_
-            p0, q0, inverse_mass_matrix_0 = ps[i], qs[i], gs[i]
-            i += 1
-            pbar.update(1)
-            pbar.set_postfix({"acceptance":(i/counter)})
-    
-    
-    burnin = int(len(qs)/2)
-    qs = qs[burnin:]
-    
-    from raynest.nest2pos import autocorrelation, acl
-    
-    thinning = int(max([acl(q) for q in qs.T]))
-    print("ACL = {}".format(thinning))
-    qs = qs[::thinning]
-
-    from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
-                        
-    import matplotlib.pyplot as plt
-    
-    x = np.linspace(15, 35, 101)
-    y = np.linspace(0.1, 1.0, 101)
+    x = np.linspace(10,50,101)
+    y = np.linspace(0.1,1.0,101)
     Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
     X, Y = np.meshgrid(x,y)
     
+    import matplotlib.pyplot as plt
     fig = plt.figure()
     ax  = fig.add_subplot(111)
-    ax.axvline(q_inj[0])
-    ax.axhline(q_inj[1])
-    C = ax.contour(X, Y, Z, 10)
-    ax.scatter(qs[:,0], qs[:,1], s=2, alpha=0.5)
+    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+    ax.axvline(q_inj[0], color='r')
+    ax.axhline(q_inj[1], color='r')
+    C = ax.contour(X, Y, Z, 32)
     fig.colorbar(C)
-    plt.show()
-    exit()
     plt.show()

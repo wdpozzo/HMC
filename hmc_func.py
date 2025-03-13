@@ -191,26 +191,10 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, *args, **kwargs)
     thinning = int(max([acl(q) for q in qs.T]))
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
-    
-    x = np.linspace(-5,5,101)
-    y = np.linspace(-5,5,101)
-    Z = np.array([log_probability(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
-
-    X, Y = np.meshgrid(x,y)
-    
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax  = fig.add_subplot(111)
-    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
-    ax.axvline(data[0])
-    ax.axhline(data[1])
-    C = ax.contour(X, Y, Z, 10)
-    fig.colorbar(C)
-    plt.show()
 
     return qs
 
-def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, *args, **kwargs):
+def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs):
     
     n_train = n_steps//5
     qs = np.zeros((n_steps+1,q0.shape[0]))
@@ -274,22 +258,6 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, *args, **kwargs):
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
     
-    x = np.linspace(-5,5,101)
-    y = np.linspace(-5,5,101)
-    Z = np.array([log_probability(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
-
-    X, Y = np.meshgrid(x,y)
-    
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax  = fig.add_subplot(111)
-    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
-    ax.axvline(data[0])
-    ax.axhline(data[1])
-    C = ax.contour(X, Y, Z, 10)
-    fig.colorbar(C)
-    plt.show()
-    
     return qs
 
 
@@ -318,4 +286,4 @@ if __name__=="__main__":
     
     logp = jax.jit(partial(log_posterior, data=data, inv_cov=inv_cov))
     
-    run_nuts_rmhmc(q0, n_steps, step_size, logp)
+    run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
