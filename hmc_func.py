@@ -15,7 +15,7 @@ import jax
 import ray
 from raynest.nest2pos import autocorrelation, acl
 
-#@jax.jit
+@jax.jit
 def make_positive_definite(A):
     A = (A + A.T) / 2  # Ensure symmetry
     eigenvalues_, eigenvectors = jnp.linalg.eigh(A)
@@ -28,7 +28,7 @@ def make_positive_definite(A):
     
     return A_positive
 
-#@jax.jit
+@jax.jit
 def kinetic_energy(p, inverse_mass_matrix):
     return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))
 
@@ -46,7 +46,7 @@ def hamiltonian(p, q, inverse_mass_matrix, log_probability):
 @partial(jax.jit, static_argnums = (0,1))
 def generalized_leap_frog(log_probability, step_size, p0, q0):
     
-    f_max = 3
+    f_max = 5
     p = p0.copy()
     q = q0.copy()
     
@@ -58,22 +58,23 @@ def generalized_leap_frog(log_probability, step_size, p0, q0):
 #    jax.debug.print("in the leap frog ==> p:{p} q:{q} g:{g}", p=p, q=q, g=inverse_mass_matrix)
     
 #    jax.debug.print("det sign {det} at these coordinates {p0} {q0}", det=jnp.linalg.slogdet(inverse_mass_matrix)[0], p0=p0, q0=q0)
-        
+    DH = nablaH(p, q, inverse_mass_matrix, log_probability)
+    
     for f in range(f_max):
-        DH = -nablaH(p, q, inverse_mass_matrix, log_probability)
         p -= 0.5 * step_size * DH
+        DH = nablaH(p, q, inverse_mass_matrix, log_probability)
 
-    _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
+#    _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
     gradH_p = jnp.dot(inverse_mass_matrix, p)
     gradHprime_p = gradH_p.copy()
     
     for f in range(f_max):
         q += step_size * (gradHprime_p + gradH_p)/2
         _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
-        gradH_q = -nablaH(p, q, inverse_mass_matrix, log_probability)
+        gradH_q = nablaH(p, q, inverse_mass_matrix, log_probability)
         gradHprime_p = jnp.dot(inverse_mass_matrix,p)
 
-    gradH_q = -nablaH(p, q, inverse_mass_matrix, log_probability)
+    gradH_q = nablaH(p, q, inverse_mass_matrix, log_probability)
     p -= 0.5 * step_size * gradH_q
 
 #    jax.debug.print("returning {p} {q} {inv}", p=p, q=q, inv=inverse_mass_matrix)
