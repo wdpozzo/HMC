@@ -196,7 +196,7 @@ def TaylorF2(params, frequency_array):
     # Extract parameters
 
       
-    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(7.005442867400122), np.float64(-0.4819802030544022)
+    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(6.005442867400122), np.float64(-0.4819802030544022)
 #    Mc, q = params[0], params[1],
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
@@ -562,20 +562,20 @@ if __name__=="__main__":
     detectors = detector_constructor(["H1"], channel =None)
     
     q_inj = np.array([
-                        np.float64(28.2289012101475),
-                       np.float64(0.8628497064389393),
+                        np.float64(18.2289012101475),
+                       np.float64(0.628497064389393),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(7.005442867400122)
+                       np.float64(6.005442867400122)
                        ])
     
     q0 = np.array([
-                       np.float64(21.2289012101475),
-                       np.float64(0.28497064389393)
+                       np.float64(17.0289012101475),
+                       np.float64(0.497064389393)
                        ])
 
 #    q0 = q_inj[:2]
@@ -591,17 +591,17 @@ if __name__=="__main__":
     logp = jax.jit(partial(log_posterior, detector_list = detectors))#jax.jit()
 
 #    print(logp(q0))
-    rng = np.random.default_rng(seed = 222)
-    n_steps = 50000
-    step_size = 3
+    rng = np.random.default_rng(seed = 22)
+    n_steps = 10000
+    step_size = 1.0
     
     from hmc_func import run_nuts_rmhmc
     
     qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
 
 
-    x = np.linspace(10,50,101)
-    y = np.linspace(0.1,1.0,101)
+    x = np.linspace(10,50,200)
+    y = np.linspace(0.1,1.0,200)
     Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
     X, Y = np.meshgrid(x,y)
@@ -609,9 +609,9 @@ if __name__=="__main__":
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax  = fig.add_subplot(111)
-    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
     ax.axvline(q_inj[0], color='r')
     ax.axhline(q_inj[1], color='r')
     C = ax.contour(X, Y, Z, 32)
+    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
     fig.colorbar(C)
     plt.show()

@@ -140,7 +140,7 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, rng):
 
 def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, *args, **kwargs):
     
-    n_train = n_steps//10
+    n_train = n_steps//2
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
     gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
@@ -187,7 +187,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, *args, **kwargs)
 #        if counter == n_train:
 #            _, step_size = tuner.update(acceptance)
     
-    qs = qs[int(len(qs)/2):]
+    qs = qs[n_train:]
     thinning = int(max([acl(q) for q in qs.T]))
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
@@ -196,7 +196,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, *args, **kwargs)
 
 def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs):
     
-    n_train = n_steps//5
+    n_train = np.maximum(n_steps//2,1000)
     qs = np.zeros((n_steps+1,q0.shape[0]))
     counter = 0
 
@@ -205,7 +205,7 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
     print("initial metric estimate = {}".format(inverse_metric_0))
     pbar = tqdm(total = n_steps)
-    tuner = DualAveragingStepSize(step_size, target_accept=0.654, gamma=0.05, t0=10.0, kappa=0.75)
+    tuner = DualAveragingStepSize(step_size, target_accept=0.6, gamma=0.1, t0=10.0, kappa=0.5)
 
     accepted = 0
     
@@ -253,7 +253,7 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs
         if counter == n_train:
             _, step_size = tuner.update(acceptance)
     
-    qs = qs[int(len(qs)/2):]
+    qs = qs[n_train:]
     thinning = int(max([acl(q) for q in qs.T]))
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
