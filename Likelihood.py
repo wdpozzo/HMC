@@ -196,7 +196,7 @@ def TaylorF2(params, frequency_array):
     # Extract parameters
 
       
-    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(6.005442867400122), np.float64(-0.4819802030544022)
+    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(5.505442867400122), np.float64(-0.4819802030544022)
 #    Mc, q = params[0], params[1],
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
@@ -570,7 +570,7 @@ if __name__=="__main__":
                        np.float64(1126259462.4088995),
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(6.005442867400122)
+                       np.float64(5.505442867400122)
                        ])
     
     q0 = np.array([
@@ -592,7 +592,7 @@ if __name__=="__main__":
 
 #    print(logp(q0))
     rng = np.random.default_rng(seed = 22)
-    n_steps = 10000
+    n_steps = 100000
     step_size = 1.0
     
     from hmc_func import run_nuts_rmhmc

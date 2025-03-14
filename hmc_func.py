@@ -196,7 +196,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, *args, **kwargs)
 
 def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs):
     
-    n_train = np.maximum(n_steps//2,1000)
+    n_train = np.minimum(n_steps//2,10000)
     qs = np.zeros((n_steps+1,q0.shape[0]))
     counter = 0
 
