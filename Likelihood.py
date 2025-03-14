@@ -436,17 +436,17 @@ def detector_constructor(names, channel = None):
 def inject_signal_in_noise(params,
                            detector_dictionary):
         
-        h = project_waveform(params, detector_dictionary)
-        
-        # add to the detector noise
-        detector_dictionary["FrequencySeries"] += h
-        
-        # signal-to-noise ratio
-        SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
-        
-        sys.stdout.write('\nInjected SNR = %.2f' %(SNR))
-        
-        return SNR, h
+    h = project_waveform(params, detector_dictionary)
+    
+    # add to the detector noise
+    detector_dictionary["FrequencySeries"] += h
+    
+    # signal-to-noise ratio
+    SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
+    
+    print('Injected SNR = %.2f' %(SNR))
+    
+    return SNR, h
 
 
 
@@ -461,18 +461,21 @@ if __name__=="__main__":
         'K': [36.41, 137.30, 15.36, 90.]
     }
 
+    from hmc_func import run_nuts_rmhmc, run_rmhmc
+
     detectors = detector_constructor(["H1"], channel =None)
+    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     
     q0 = np.array([
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
-                       np.float64(2.82289012101475),
+                       np.float64(23.82289012101475),
                        np.float64(0.8628497064389393),
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(5.295442867400122)
+                       np.float64(6.295442867400122)
                        ])
 
     snr, h_inj = inject_signal_in_noise(q0, detectors[0])
@@ -481,44 +484,15 @@ if __name__=="__main__":
     rng = np.random.default_rng(seed = 222)
     n_steps = 1000
     n_leaps = 10
-    step_size = 0.00001
+    step_size = 0.1
     
-    ps = np.zeros((n_steps,q0.shape[0]))
-    qs = np.zeros_like(ps)
-    gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
-
-    from tqdm import tqdm
-    from hmc_func import compute_mass_matrix, generalized_leap_frog, hamiltonian
-
-    _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-
-    pbar = tqdm(total = n_steps)
+    qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
     
-    i = 0
-    counter = 0
+    import matplotlib.pyplot as plt
+    from corner import corner
+    corner(qs,
+                        labels=None,
+                        quantiles=[0.05, 0.5, 0.95], truths = q0,
+                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
-    while i < n_steps:
-    
-        counter += 1
-        print(counter, i, np.linalg.slogdet(inverse_mass_matrix_0))
-        p0 = np.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
-        
-        for k in range(n_leaps):
-            p_, q_, g_ = generalized_leap_frog(logp, step_size, p0, q0)
-            print(k," ==>", p_, q_, g_)
-        alpha = min(0.0,hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
-#        print(alpha, hamiltonian(p0, q0, inverse_mass_matrix_0, logp)-hamiltonian(p_, q_, g_, logp))
-        if alpha > np.log(rng.uniform()):
-            ps[i], qs[i], gs[i] = p_, q_, g_
-            p0, q0, inverse_mass_matrix_0 = ps[i], qs[i], gs[i]
-            i += 1
-            pbar.update(1)
-    
-    
-    qs = qs[int(len(qs)/2):]
-    
-    from raynest.nest2pos import autocorrelation, acl
-    
-    thinning = int(max([acl(q) for q in qs.T]))
-    print("ACL = {}".format(thinning))
-    qs = qs[::thinning]
+    plt.savefig("corner.pdf",bbox_inches='tight')
