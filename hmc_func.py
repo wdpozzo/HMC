@@ -94,9 +94,10 @@ def generalized_leap_frog(log_probability, step_size, p0, q0, inverse_mass_matri
     
     for f in range(f_max):
         q += step_size * (gradHprime_p + gradH_p)/2
+        
         _, inverse_mass_matrix, _ = compute_mass_matrix(hessV, q)
         gradHprime_p = jnp.dot(inverse_mass_matrix,p)
-
+    q =q.at[1].set(jnp.where(q[1]<1, q[1] , 2-q[1])) 
     gradH_q = nablaH(p, q, inverse_mass_matrix, log_probability)
     p -= 0.5 * step_size * gradH_q
 

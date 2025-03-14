@@ -574,7 +574,7 @@ if __name__=="__main__":
                        ])
     
     q0 = np.array([
-                       np.float64(17.0289012101475),
+                       np.float64(11.0289012101475),
                        np.float64(0.497064389393)
                        ])
 
@@ -614,4 +614,5 @@ if __name__=="__main__":
     C = ax.contour(X, Y, Z, 32)
     ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
     fig.colorbar(C)
+    fig.savefig("likelihood.png")
     plt.show()
