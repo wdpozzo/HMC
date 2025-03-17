@@ -487,6 +487,15 @@ if __name__=="__main__":
     step_size = 0.1
     
     qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
+
+#    qs = np.concatenate(result)
+    thinning = int(max([acl(q) for q in qs.T]))
+    
+    if thinning < 1:
+        thinning = 1
+
+    print("ACL = {}".format(thinning))
+    qs = qs[::thinning]
     
     import matplotlib.pyplot as plt
     from corner import corner
