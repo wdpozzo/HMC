@@ -196,7 +196,7 @@ def TaylorF2(params, frequency_array):
     # Extract parameters
 
       
-    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(5.505442867400122), np.float64(-0.4819802030544022)
+    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(6.505442867400122), np.float64(-0.4819802030544022)
 #    Mc, q = params[0], params[1],
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
@@ -469,8 +469,8 @@ def check_posterior(detector_dictionary):
 
     from hmc_func import compute_mass_matrix
 
-    x = np.linspace(5.0,40.0, 100)
-    y = np.linspace(0.125,1.0, 100)
+    x = np.linspace(5.0,40.0, 256)
+    y = np.linspace(0.125,1.0, 256)
     Z = np.zeros((x.shape[0],y.shape[0]))
     
     logP = jax.jit(partial(log_posterior, detector_list=[detector_dictionary]))
@@ -570,16 +570,16 @@ if __name__=="__main__":
                        np.float64(1126259462.4088995),
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(5.505442867400122)
+                       np.float64(6.505442867400122)
                        ])
     
     q0 = np.array([
-                       np.float64(11.0289012101475),
-                       np.float64(0.497064389393)
+                       np.float64(15.0289012101475),
+                       np.float64(0.97064389393)
                        ])
 
 #    q0 = q_inj[:2]
-#    import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
 #    plt.plot(detectors[0]["Frequency"], detectors[0]["FrequencySeries"])
     snr, h_inj = inject_signal_in_noise(q_inj, detectors[0])
 #    
@@ -590,15 +590,26 @@ if __name__=="__main__":
 #    exit()
     logp = jax.jit(partial(log_posterior, detector_list = detectors))#jax.jit()
 
+    from hmc_func import test_integrator, compute_mass_matrix
+    
 #    print(logp(q0))
-    rng = np.random.default_rng(seed = 22)
-    n_steps = 100000
-    step_size = 1.0
+    rng = np.random.default_rng(seed = 232)
+    n_steps = 10000
+    n_leaps = 500
+    step_size = 0.005
     
-    from hmc_func import run_nuts_rmhmc
+    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
+    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
+    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
+    exit()
     
-    qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
+    from hmc_func import run_nuts_rmhmc, run_rmhmc
+    
+    qs = run_rmhmc(q0, n_steps, n_leaps, step_size, logp, rng)
 
+    thinning = int(max([acl(q) for q in qs.T]))
+    print("ACL = {}".format(thinning))
+    qs = qs[::thinning]
 
     x = np.linspace(10,50,200)
     y = np.linspace(0.1,1.0,200)
