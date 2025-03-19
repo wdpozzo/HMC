@@ -574,8 +574,8 @@ if __name__=="__main__":
                        ])
     
     q0 = np.array([
-                       np.float64(15.0289012101475),
-                       np.float64(0.97064389393)
+                       np.float64(18.),
+                       np.float64(0.6)
                        ])
 
 #    q0 = q_inj[:2]
@@ -593,21 +593,25 @@ if __name__=="__main__":
     from hmc_func import test_integrator, compute_mass_matrix
     
 #    print(logp(q0))
-    rng = np.random.default_rng(seed = 232)
-    n_steps = 10000
-    n_leaps = 500
-    step_size = 0.005
+    rng = np.random.default_rng(seed = 32)
+    n_steps = 1000
+    n_leaps = 20
+    step_size = 0.1
     
-    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
-    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
-    exit()
+#    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
+#    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
+#    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
+#    exit()
     
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
     qs = run_rmhmc(q0, n_steps, n_leaps, step_size, logp, rng)
 
+    from raynest.nest2pos import autocorrelation, acl
+    
     thinning = int(max([acl(q) for q in qs.T]))
+    if thinning < 1:
+        thinning = 1
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
 

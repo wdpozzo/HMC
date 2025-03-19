@@ -95,7 +95,7 @@ def kinetic_energy(p, inverse_mass_matrix):
 
 @partial(jax.jit, static_argnums = (0))
 def compute_mass_matrix(hessian, q):
-    mass_matrix = -hessian(q)
+    mass_matrix = -hessian(q)+1e-6*jnp.eye(q.shape[0])
     inverse_mass_matrix = jnp.linalg.inv(make_positive_definite(mass_matrix))
     logdet = jnp.linalg.slogdet(mass_matrix)[1]
     return mass_matrix, inverse_mass_matrix, logdet
@@ -113,16 +113,16 @@ def implicit_midpoint(p0, q0, log_probability, step_size):
     
     def equations_of_motion(z):
         p, q = jnp.split(z, 2)
-        eq1 = p0 + step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability)
-        eq2 = q0 - step_size * nablaHp(0.5*(p+p0), 0.5*(q+q0), log_probability)
+        eq1 = p0 - step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability)
+        eq2 = q0 + step_size * nablaHp(0.5*(p+p0), 0.5*(q+q0), log_probability)
         return jnp.concatenate([eq1, eq2])
         
     z_initial = jnp.concatenate([p0, q0])
-#    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
-#                               history_size=5,
-#                               ridge=1e-6,
-#                               tol=1e-5)
-    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
+    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
+                               history_size=5,
+                               ridge=1e-6,
+                               tol=1e-5)
+#    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
                                
 #    sol = fixed_point_iter(equations_of_motion, z_initial)#, maxiter=10, history_size=5)
     sol = fpi.run(z_initial).params
@@ -217,7 +217,9 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
     i = 0
     
     while i < n_steps:
-    
+        
+        
+#        print(i,inverse_mass_matrix_0)
         counter += 1
         p0 = jnp.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
         
@@ -225,16 +227,21 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
         q_ = q0
         H0 = hamiltonian(p0, q0, log_probability)
         
-        for _ in range(n_leaps):
+        for k in range(n_leaps):
 #            p_, q_, g_ = generalized_leap_frog(logp, step_size, p_, q_, inverse_mass_matrix_0)
+#            print("pre - leap ",k,"p:",p_,"q:",q_,"invM:",compute_mass_matrix(jax.hessian(log_probability),q_)[1])
             p_, q_, g_ = implicit_midpoint(p_, q_, log_probability, step_size)
+#            print("post - leap ",k,"p:",p_,"q:",q_,"invM:",g_)
         
         H     = hamiltonian(p_, q_, log_probability)
         alpha = min(0.0,H0-H)
 
         if alpha > np.log(rng.uniform()):
             ps[i], qs[i], gs[i] = p_, q_, g_
+#            print("accepting",i, ps[i], qs[i], gs[i])
+            
             p0, q0, inverse_mass_matrix_0 =  p_, q_, g_
+            
             i += 1
             pbar.update(1)
             
@@ -323,61 +330,72 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
 
     qs = np.zeros((steps,q0.shape[0]))
     qs_i = np.zeros((steps,q0.shape[0]))
+    ps = np.zeros((steps,q0.shape[0]))
+    ps_i = np.zeros((steps,q0.shape[0]))
     
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
+    from tqdm import tqdm
     
-    fig = plt.figure()
-    ax  = fig.add_subplot(111, projection='3d')
+    fig1 = plt.figure(1)
+    
+    ax2 = fig1.add_subplot(121)
+    ax  = fig1.add_subplot(122)
     
     p, q = p0.copy(), q0.copy()
     p_i, q_i = p0.copy(), q0.copy()
 
-    ax.scatter(q0[0], q0[1], -logp(q0), color='k', marker = '+', s = 128)
-
-    colors = cm.rainbow_r(np.linspace(0, 1, steps))
+    ax.scatter(q0[0], q0[1], -logp(q0), color='k', marker = '+')
+    ax2.scatter(p0[0], p0[1], -logp(q0), color='k', marker = '+')
     
-    for i in range(steps):
+    colors = cm.RdBu(np.linspace(0, 1, steps))
+    
+    for i in tqdm(range(steps)):
         p, q, inverse_metric = generalized_leap_frog(logp, dt, p, q, inv_m)
         p_i, q_i, inverse_metric_i = implicit_midpoint(p_i, q_i, logp, dt)
-        qs[i] = q
-        qs_i[i] = q_i
+        ps[i], qs[i] = p, q
+        ps_i[i], qs_i[i] = p_i, q_i
         ax.scatter(qs[i,0], qs[i,1], -logp(qs[i]), color=colors[i], marker = 's')
         ax.scatter(qs_i[i,0], qs_i[i,1], -logp(qs_i[i]), color=colors[i], marker = 'o')
+        ax2.scatter(ps[i,0], ps[i,1], -logp(qs[i]), color=colors[i], marker = 's')
+        ax2.scatter(ps_i[i,0], ps_i[i,1], -logp(qs_i[i]), color=colors[i], marker = 'o')
 
-    from tqdm import tqdm
+    ax.plot(qs[:,0], qs[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
+    ax.plot(qs_i[:,0], qs_i[:,1], color='k', lw=0.5, linestyle='solid', label = 'IM')
+    ax2.plot(ps[:,0], ps[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
+    ax2.plot(ps_i[:,0], ps_i[:,1], color='k', lw=0.5, linestyle='solid', label = 'IM')
     
-    x, y = np.linspace(10,30,100), np.linspace(0.5,1.0,100)
-    Z    = np.zeros((100,100))
+    nbins = 64
+    x, y = np.linspace(-10,10,nbins), np.linspace(-10,10,nbins)
+    Z    = np.zeros((nbins,nbins))
     
-    for i in tqdm(range(100)):
-        for j in range(100):
+    for i in tqdm(range(nbins)):
+        for j in range(nbins):
             params = np.hstack((x[i],y[j]))
             Z[i,j] = -logp(params)
 #            print("{} {} mc = {} q = {} H = {} invM = {}".format(i,j,x[i],y[j], np.linalg.inv(H(params)), compute_mass_matrix(H, params)[1]))
 
     X, Y = np.meshgrid(x, y)
 
-    C = ax.plot_surface(X, Y, Z.T, alpha = 0.5, cmap=cm.coolwarm,
-                       linewidth=0, antialiased=False)
-    fig.colorbar(C)
+    C = ax.contour(X, Y, Z.T, 256, alpha = 0.5, cmap=cm.coolwarm)
+    fig1.colorbar(C)
 
     
 #    ax.plot(qs_i[:,0],qs_i[:,1],'o-', color='green', label = "IM")
-    plt.legend()
+    fig1.legend()
     
     plt.show()
-
 
 if __name__=="__main__":
     
     dim = 2
     n_processes = 1
-    rng = [np.random.default_rng(seed = 42+j) for j in range(n_processes)]
-    n_steps = 10000
-    n_leaps = 100
+    rng = [np.random.default_rng(seed = 1+j) for j in range(n_processes)]
+    n_steps = 100000
+    n_leaps = 10
+    step_size = 0.5
     
-    q0 = rng[0].uniform(-5,5,size=dim)
+    q0 = rng[0].uniform(-5,5,size=dim)#jnp.array([-3.,4.5])#
     
     from scipy.stats import random_correlation
     
@@ -385,22 +403,42 @@ if __name__=="__main__":
     eigs        = np.array(len(q0)*eigs/np.sum(eigs))
     cov         = random_correlation.rvs(eigs, random_state=rng[0])
     inv_cov     = np.linalg.inv(cov)
-
-    step_size = 1.0
-    data  = rng[0].uniform(-5,5,size=dim)
+    data        = rng[0].uniform(-5,5,size=dim)
     
     def log_posterior(q, data, inv_cov):
         r = (data - q)
         return -0.5*jnp.dot(r.T,jnp.dot(inv_cov,r))
+    
+    eigs1        = rng[0].uniform(1,100,len(q0))
+    eigs1        = np.array(len(q0)*eigs/np.sum(eigs))
+    cov1         = random_correlation.rvs(eigs, random_state=rng[0])
+    inv_cov1     = np.linalg.inv(cov)
+    data1        = rng[0].uniform(-10,10,size=dim)
+    
+    eigs2        = rng[0].uniform(1,100,len(q0))
+    eigs2        = np.array(len(q0)*eigs/np.sum(eigs))
+    cov2         = random_correlation.rvs(eigs, random_state=rng[0])
+    inv_cov2     = np.linalg.inv(cov)
+    data2        = rng[0].uniform(-10,10,size=dim)
 
-    logp = jax.jit(partial(log_posterior, data=data, inv_cov=inv_cov))
-    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng[0].normal(size=q0.shape[0]))
-#    
+    from jax.scipy.special import logsumexp
+    
+    def log_posterior_mixture(q, data1, inv_cov1, data2, inv_cov2):
+        w  = 0.3
+        r1 = (data1 - q)
+        r2 = (data2 - q)
+        p1 =  -0.5*jnp.dot(r1.T,jnp.dot(inv_cov1,r1))
+        p2 =  -0.5*jnp.dot(r2.T,jnp.dot(inv_cov2,r2))
+        return logsumexp(jnp.array([p1,p2]), b=jnp.array([w,1-w]))
+
+    logp = jax.jit(partial(log_posterior_mixture, data1=data1, inv_cov1=inv_cov1, data2=data2, inv_cov2=inv_cov2))
+#    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
+#    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng[0].normal(size=q0.shape[0]))
+##    
 #    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
 #    exit()
 
-    qs = run_nuts_rmhmc(rng[0].uniform(-5,5,size=dim), n_steps, step_size, logp, rng[0])
+    qs = run_rmhmc(rng[0].uniform(-5,5,size=dim), n_steps, n_leaps, step_size, logp, rng[0])
                   #ray.get([for j in range(n_processes)])
 
 #    qs = np.concatenate(result)
