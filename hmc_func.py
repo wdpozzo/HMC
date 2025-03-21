@@ -1,5 +1,6 @@
 import ray
-#ray.init()
+from ray.util.queue import Queue
+ray.init()
 
 import numpy as np
 import jax.numpy as jnp
@@ -77,6 +78,44 @@ def find_reasonable_time_step(q0, log_probability, rng):
     return step_size
 
 @jax.jit
+def softabs_lambda(lambdas, alpha):
+    """
+    Compute the SoftAbs regularized eigenvalues.
+    Args:
+        lambdas: Eigenvalues of the Hessian.
+        alpha: SoftAbs smoothing parameter.
+    
+    Returns:
+        Regularized eigenvalues.
+    """
+    return lambdas / jnp.tanh(alpha * lambdas)
+
+@jax.jit
+def softabs_metric(H, alpha=1e-1):
+    """
+    Compute the SoftAbs metric tensor given a potential energy function U.
+    
+    Args:
+        U: Potential energy function U(q).
+        q: Position variable (state in phase space).
+        alpha: SoftAbs regularization parameter (controls smoothness).
+    
+    Returns:
+        SoftAbs metric g(q).
+    """
+
+    # Eigen decomposition of the Hessian
+    lambdas, V = jnp.linalg.eigh(H)  # H = V D V^T, where D is diagonal of eigenvalues
+
+    # Apply SoftAbs function to eigenvalues
+    soft_lambdas = softabs_lambda(lambdas, alpha)
+
+    # Reconstruct metric: g(q) = V Λ_soft V^T
+    G = V @ jnp.diag(soft_lambdas) @ V.T
+
+    return G
+    
+@jax.jit
 def make_positive_definite(A):
     A = (A + A.T) / 2  # Ensure symmetry
     eigenvalues_, eigenvectors = jnp.linalg.eigh(A)
@@ -93,11 +132,26 @@ def make_positive_definite(A):
 def kinetic_energy(p, inverse_mass_matrix):
     return 0.5*jnp.dot(p.T,jnp.dot(inverse_mass_matrix,p))
 
+@jax.jit
+def symmetrise(A):
+    return (A + A.T) / 2
+
 @partial(jax.jit, static_argnums = (0))
 def compute_mass_matrix(hessian, q):
-    mass_matrix = -hessian(q)+1e-6*jnp.eye(q.shape[0])
-    inverse_mass_matrix = jnp.linalg.inv(make_positive_definite(mass_matrix))
+    mass_matrix = symmetrise(-hessian(q))#+1e-6*jnp.eye(q.shape[0])
+    sign, logdet = jnp.linalg.slogdet(mass_matrix)
+#    jax.debug.print("sign = {sign}", sign=sign)
+    
+    def softabs_case(_):
+        return softabs_metric(mass_matrix)
+
+    def identity_case(_):
+        return mass_matrix
+        
+    mass_matrix = jax.lax.cond(sign < 0.0, softabs_case, identity_case, None)
+    inverse_mass_matrix = jnp.linalg.inv(mass_matrix)#make_positive_definite()
     logdet = jnp.linalg.slogdet(mass_matrix)[1]
+    
     return mass_matrix, inverse_mass_matrix, logdet
 
 @partial(jax.jit, static_argnums = (2))
@@ -113,16 +167,16 @@ def implicit_midpoint(p0, q0, log_probability, step_size):
     
     def equations_of_motion(z):
         p, q = jnp.split(z, 2)
-        eq1 = p0 - step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability)
-        eq2 = q0 + step_size * nablaHp(0.5*(p+p0), 0.5*(q+q0), log_probability)
+        eq1 = p0 + step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability)
+        eq2 = q0 - step_size * nablaHp(0.5*(p+p0), 0.5*(q+q0), log_probability)
         return jnp.concatenate([eq1, eq2])
         
     z_initial = jnp.concatenate([p0, q0])
-    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
-                               history_size=5,
-                               ridge=1e-6,
-                               tol=1e-5)
-#    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
+#    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
+#                               history_size=5,
+#                               ridge=1e-6,
+#                               tol=1e-5)
+    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
                                
 #    sol = fixed_point_iter(equations_of_motion, z_initial)#, maxiter=10, history_size=5)
     sol = fpi.run(z_initial).params
@@ -259,28 +313,32 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
 
     return qs
 
-#@ray.remote
-def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs):
+@ray.remote
+def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, **kwargs):
     
-    n_train = np.minimum(n_steps//2,5000)*0
+    n_train = np.minimum(n_steps//10,5000)
     print("training length =", n_train)
 
     qs = np.zeros((2*n_steps,q0.shape[0]))
     counter = 0
 
-    from tqdm import tqdm
+    
 
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
+    print("initial point = {}".format(q0))
     print("initial metric estimate = {}".format(inverse_metric_0))
-    print("determinant =", np.linalg.slogdet(inverse_metric_0))
-    pbar = tqdm(total = n_steps)
-    tuner = DualAveragingStepSize(step_size, target_accept=0.654, gamma=0.1, t0=10.0, kappa=0.5)
+    print("determinant =", jnp.linalg.slogdet(inverse_metric_0))
+    
+    tuner = DualAveragingStepSize(step_size, target_accept=0.5, gamma=0.1, t0=10.0, kappa=0.5)
 
+    p_sharp_l = jnp.zeros_like(q0)
+    p_sharp_r = jnp.zeros_like(q0)
     accepted = 0
+    acceptance = 0.0
     
     while accepted < n_steps:
     
-        p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
+        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
         logP = log_probability(q0) - kinetic_energy(p0, inverse_metric_0)
         logu = logP - rng.exponential()
 
@@ -294,37 +352,39 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, *args, **kwargs
 
             if v == -1:
                 p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, rng)
+                p_sharp_l += p_l
             else:
                 _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, rng)
-
+                p_sharp_r += p_r
+                
             if sprime:
             
                 alpha = min(1, nprime / n)
                 
                 if rng.uniform() < alpha:
-                    q0 = qprime.copy()  # Avoid extra copying
-                    qs[accepted] = q0
-                    pbar.update(1)
+                    q0 = qprime.copy()
+                    queue.put(q0)
                     accepted += 1
-
+#                    yield q0
+            
             n += nprime
-            delta_q = q_r - q_l
-            s = sprime * (np.dot(delta_q, p_l) > 0) * (np.dot(delta_q, p_r) > 0)
+            s = sprime * (jnp.dot(p_sharp_l, p_l) > 0) * (jnp.dot(p_sharp_r, p_r) > 0)
             j += 1
-        
+            
         counter += 1
         acceptance = accepted / counter
-        pbar.set_postfix({"acceptance rate": f"{acceptance:.3f}"})
+#        pbar.set_postfix({"acceptance rate": f"{acceptance:.3f}"})
+        
         if counter < n_train:
             step_size, _ = tuner.update(acceptance)
-            pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
+#            pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
 
         if counter == n_train:
             _, step_size = tuner.update(acceptance)
     
-    qs = qs[n_train:n_steps]
-    
-    return qs
+#    qs = qs[n_train:n_steps]
+#    
+#    return qs
 
 def test_integrator(p0, q0, steps, dt, logp, inv_m):
 
@@ -336,17 +396,20 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
     from tqdm import tqdm
+    from geometric_utils import radius_of_curvature
     
-    fig1 = plt.figure(1)
+    fig1 = plt.figure()
     
-    ax2 = fig1.add_subplot(121)
-    ax  = fig1.add_subplot(122)
+    ax4 = fig1.add_subplot(224)
+    ax3 = fig1.add_subplot(223)
+    ax2 = fig1.add_subplot(221)
+    ax  = fig1.add_subplot(222)
     
     p, q = p0.copy(), q0.copy()
     p_i, q_i = p0.copy(), q0.copy()
 
-    ax.scatter(q0[0], q0[1], -logp(q0), color='k', marker = '+')
-    ax2.scatter(p0[0], p0[1], -logp(q0), color='k', marker = '+')
+    ax.scatter(q0[0], q0[1], color='k', marker = '+', s=128)
+    ax2.scatter(p0[0], p0[1], color='k', marker = '+', s=128)
     
     colors = cm.RdBu(np.linspace(0, 1, steps))
     
@@ -355,30 +418,40 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
         p_i, q_i, inverse_metric_i = implicit_midpoint(p_i, q_i, logp, dt)
         ps[i], qs[i] = p, q
         ps_i[i], qs_i[i] = p_i, q_i
-        ax.scatter(qs[i,0], qs[i,1], -logp(qs[i]), color=colors[i], marker = 's')
+#        ax.scatter(qs[i,0], qs[i,1], -logp(qs[i]), color=colors[i], marker = 's')
         ax.scatter(qs_i[i,0], qs_i[i,1], -logp(qs_i[i]), color=colors[i], marker = 'o')
-        ax2.scatter(ps[i,0], ps[i,1], -logp(qs[i]), color=colors[i], marker = 's')
+#        ax2.scatter(ps[i,0], ps[i,1], -logp(qs[i]), color=colors[i], marker = 's')
         ax2.scatter(ps_i[i,0], ps_i[i,1], -logp(qs_i[i]), color=colors[i], marker = 'o')
 
-    ax.plot(qs[:,0], qs[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
+#    ax.plot(qs[:,0], qs[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
     ax.plot(qs_i[:,0], qs_i[:,1], color='k', lw=0.5, linestyle='solid', label = 'IM')
-    ax2.plot(ps[:,0], ps[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
+#    ax2.plot(ps[:,0], ps[:,1], color='k', lw=0.5, linestyle='dashed', label = 'GLP')
     ax2.plot(ps_i[:,0], ps_i[:,1], color='k', lw=0.5, linestyle='solid', label = 'IM')
     
-    nbins = 64
-    x, y = np.linspace(-10,10,nbins), np.linspace(-10,10,nbins)
+    nbins = 101
+    x, y = np.linspace(10,50,nbins), np.linspace(0.1,1.0,nbins)
     Z    = np.zeros((nbins,nbins))
+    R    = np.zeros((nbins,nbins))
+    K    = np.zeros((nbins,nbins))
+    
+    g    = lambda x: -jax.hessian(logp)(x)
     
     for i in tqdm(range(nbins)):
         for j in range(nbins):
             params = np.hstack((x[i],y[j]))
             Z[i,j] = -logp(params)
-#            print("{} {} mc = {} q = {} H = {} invM = {}".format(i,j,x[i],y[j], np.linalg.inv(H(params)), compute_mass_matrix(H, params)[1]))
+            _, invM, logdet = compute_mass_matrix(g,params)
+            K[i,j] = jnp.exp(logdet)#radius_of_curvature(g,params)
+            R[i,j] = jnp.log(radius_of_curvature(g,params))
+#            print("{} {} x1 = {} x2 = {} g_inv = {} r = {}".format(i,j,x[i],y[j], compute_mass_matrix(g,params)[1],R[i,j]))
 
     X, Y = np.meshgrid(x, y)
 
     C = ax.contour(X, Y, Z.T, 256, alpha = 0.5, cmap=cm.coolwarm)
-    fig1.colorbar(C)
+    C = ax3.pcolormesh(X, Y, R.T, alpha = 0.5, cmap=cm.coolwarm)
+    fig1.colorbar(C, label = "log curvature")
+    C = ax4.pcolormesh(X, Y, K.T, alpha = 0.5, cmap=cm.coolwarm)
+    
 
     
 #    ax.plot(qs_i[:,0],qs_i[:,1],'o-', color='green', label = "IM")
@@ -389,13 +462,13 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
 if __name__=="__main__":
     
     dim = 2
-    n_processes = 1
-    rng = [np.random.default_rng(seed = 1+j) for j in range(n_processes)]
-    n_steps = 100000
-    n_leaps = 10
-    step_size = 0.5
+    n_processes = 6
+    rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
+    n_steps = 2000
+    n_leaps = 200
+    step_size = 0.03
     
-    q0 = rng[0].uniform(-5,5,size=dim)#jnp.array([-3.,4.5])#
+    q0 = jnp.array([-3.,2.])#rng[0].uniform(-5,5,size=dim)#
     
     from scipy.stats import random_correlation
     
@@ -413,18 +486,18 @@ if __name__=="__main__":
     eigs1        = np.array(len(q0)*eigs/np.sum(eigs))
     cov1         = random_correlation.rvs(eigs, random_state=rng[0])
     inv_cov1     = np.linalg.inv(cov)
-    data1        = rng[0].uniform(-10,10,size=dim)
+    data1        = jnp.array([2.0,2.0])
     
-    eigs2        = rng[0].uniform(1,100,len(q0))
+    eigs2        = rng[0].uniform(1,10,len(q0))
     eigs2        = np.array(len(q0)*eigs/np.sum(eigs))
     cov2         = random_correlation.rvs(eigs, random_state=rng[0])
-    inv_cov2     = np.linalg.inv(cov)
-    data2        = rng[0].uniform(-10,10,size=dim)
+    inv_cov2     = np.linalg.inv(cov2)
+    data2        = jnp.array([-2.0,-2.0])
 
     from jax.scipy.special import logsumexp
     
     def log_posterior_mixture(q, data1, inv_cov1, data2, inv_cov2):
-        w  = 0.3
+        w  = 0.1
         r1 = (data1 - q)
         r2 = (data2 - q)
         p1 =  -0.5*jnp.dot(r1.T,jnp.dot(inv_cov1,r1))
@@ -432,16 +505,28 @@ if __name__=="__main__":
         return logsumexp(jnp.array([p1,p2]), b=jnp.array([w,1-w]))
 
     logp = jax.jit(partial(log_posterior_mixture, data1=data1, inv_cov1=inv_cov1, data2=data2, inv_cov2=inv_cov2))
-#    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
+#    logp = jax.jit(partial(log_posterior, data = data, inv_cov = inv_cov))
+#    _, inverse_metric_0, logdet = compute_mass_matrix(jax.hessian(logp),q0)
+#    print(inverse_metric_0, np.linalg.eig(inverse_metric_0))
 #    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng[0].normal(size=q0.shape[0]))
-##    
+#    p0 = jnp.array([0.0,0.0])
+    
 #    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
 #    exit()
 
-    qs = run_rmhmc(rng[0].uniform(-5,5,size=dim), n_steps, n_leaps, step_size, logp, rng[0])
-                  #ray.get([for j in range(n_processes)])
+    from tqdm import tqdm
+    
+    queue = Queue()
+    
+    chains = [run_nuts_rmhmc.remote(rng[j].uniform(-5,5,size=dim), n_steps, step_size, logp, rng[j], queue) for j in range(n_processes)]
+                  #ray.get([)
+    
+    pbar = tqdm(total = n_steps*n_processes)
+    qs = np.zeros((n_steps*n_processes, dim))
+    for i in range(n_steps*n_processes):
+        qs[i] = queue.get()
+        pbar.update(1)
 
-#    qs = np.concatenate(result)
     thinning = int(max([acl(q) for q in qs.T]))
     
     if thinning < 1:
@@ -453,6 +538,24 @@ if __name__=="__main__":
     print("indipendent samples = ",qs.shape[0])
     
     import matplotlib.pyplot as plt
+    
+    x = np.linspace(-5.,5.,200)
+    y = np.linspace(-5.,5.,200)
+    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
+
+    X, Y = np.meshgrid(x,y)
+
+    fig = plt.figure()
+    ax  = fig.add_subplot(111)
+    ax.plot(data1[0],data1[1], 'o', color='r', zorder=100)
+    ax.plot(data2[0],data2[1], 'o', color='r', zorder=101)
+    
+    C = ax.contour(X, Y, Z, 32)
+    ax.plot(qs[:,0],qs[:,1],markersize=2,color='green',marker='o',alpha=0.5)
+    fig.colorbar(C)
+    fig.savefig("likelihood.pdf", bbox_inches='tight')
+    
+    
     from corner import corner
     corner(qs,
                         labels=None,
@@ -460,3 +563,5 @@ if __name__=="__main__":
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
+    
+    plt.show()

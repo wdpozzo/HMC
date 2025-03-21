@@ -563,7 +563,7 @@ if __name__=="__main__":
     
     q_inj = np.array([
                         np.float64(18.2289012101475),
-                       np.float64(0.628497064389393),
+                       np.float64(0.828497064389393),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
@@ -574,8 +574,8 @@ if __name__=="__main__":
                        ])
     
     q0 = np.array([
-                       np.float64(18.),
-                       np.float64(0.6)
+                       np.float64(18.6),
+                       np.float64(0.88)
                        ])
 
 #    q0 = q_inj[:2]
@@ -594,9 +594,9 @@ if __name__=="__main__":
     
 #    print(logp(q0))
     rng = np.random.default_rng(seed = 32)
-    n_steps = 1000
-    n_leaps = 20
-    step_size = 0.1
+    n_steps = 10000
+    n_leaps = 50
+    step_size = 0.3
     
 #    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
 #    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
@@ -605,7 +605,7 @@ if __name__=="__main__":
     
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
-    qs = run_rmhmc(q0, n_steps, n_leaps, step_size, logp, rng)
+    qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
 
     from raynest.nest2pos import autocorrelation, acl
     
@@ -615,7 +615,7 @@ if __name__=="__main__":
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
 
-    x = np.linspace(10,50,200)
+    x = np.linspace(10,30,200)
     y = np.linspace(0.1,1.0,200)
     Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
@@ -630,4 +630,21 @@ if __name__=="__main__":
     ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
     fig.colorbar(C)
     fig.savefig("likelihood.png")
+#
+#    
+#    fig = plt.figure()
+#    for i,n in enumerate(names):
+#        ax = fig.add_subplot(len(names),1,(i+1))
+#        ax.plot(samples[:,i],'o-',lw=0.2,color='blue')
+#        ax.axhline(M.means[i],color='r')
+#        ax.set_ylabel(n, fontsize=4)
+#    plt.subplots_adjust()
+#    plt.savefig('trace.pdf',bbox_inches='tight')
+#    
+    
+    from corner import corner
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:2],
+                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
+    
+    plt.savefig("corner.pdf",bbox_inches='tight')
     plt.show()
