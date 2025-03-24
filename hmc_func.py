@@ -312,7 +312,10 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
 
 @ray.remote
 def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, **kwargs):
-    
+    """
+    termination condition from 
+    https://arxiv.org/pdf/1304.1920"
+    """
     n_train = np.minimum(n_steps//10,5000)
 #    print("training length =", n_train)
 
@@ -362,7 +365,7 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, *
                     accepted += 1
             
             n += nprime
-            s = sprime * (jnp.dot(p_sharp_l, p_l) > 0) * (jnp.dot(p_sharp_r, p_r) > 0)
+            s = sprime * (jnp.dot(p_sharp_l, p_l) < 0) * (jnp.dot(p_sharp_r, p_r) < 0)
             j += 1
             
         counter += 1
@@ -456,9 +459,9 @@ if __name__=="__main__":
     dim = 2
     n_processes = 6
     rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
-    n_steps = 1000
+    n_steps = 2000
     n_leaps = 200
-    step_size = 0.01
+    step_size = 0.03
     
     q0 = jnp.array([-3.,2.])#rng[0].uniform(-5,5,size=dim)#
     
