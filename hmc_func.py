@@ -1,6 +1,6 @@
 import ray
 from ray.util.queue import Queue
-ray.init()
+ray.init(ignore_reinit_error=True)
 
 import numpy as np
 import jax.numpy as jnp
@@ -91,7 +91,7 @@ def softabs_lambda(lambdas, alpha):
     return lambdas / jnp.tanh(alpha * lambdas)
 
 @jax.jit
-def softabs_metric(H, alpha=1e-1):
+def softabs_metric(H, alpha=1e-7):
     """
     Compute the SoftAbs metric tensor given a potential energy function U.
     
@@ -138,6 +138,8 @@ def symmetrise(A):
 
 @partial(jax.jit, static_argnums = (0))
 def compute_mass_matrix(hessian, q):
+    """ see https://arxiv.org/pdf/1212.4693"""
+    
     mass_matrix = symmetrise(-hessian(q))#+1e-6*jnp.eye(q.shape[0])
     sign, logdet = jnp.linalg.slogdet(mass_matrix)
 #    jax.debug.print("sign = {sign}", sign=sign)
@@ -161,7 +163,7 @@ def hamiltonian(p, q, log_probability):
 
 @partial(jax.jit, static_argnums = (2))
 def implicit_midpoint(p0, q0, log_probability, step_size):
-
+    """ from https://github.com/matt-graham/mici/tree/main and references therein"""
     nablaHq = jax.grad(hamiltonian, argnums=1)
     nablaHp = jax.grad(hamiltonian, argnums=0)
     
@@ -317,17 +319,15 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
 def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, **kwargs):
     
     n_train = np.minimum(n_steps//10,5000)
-    print("training length =", n_train)
+#    print("training length =", n_train)
 
     qs = np.zeros((2*n_steps,q0.shape[0]))
     counter = 0
 
-    
-
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
-    print("initial point = {}".format(q0))
-    print("initial metric estimate = {}".format(inverse_metric_0))
-    print("determinant =", jnp.linalg.slogdet(inverse_metric_0))
+#    print("initial point = {}".format(q0))
+#    print("initial metric estimate = {}".format(inverse_metric_0))
+#    print("determinant =", jnp.linalg.slogdet(inverse_metric_0))
     
     tuner = DualAveragingStepSize(step_size, target_accept=0.5, gamma=0.1, t0=10.0, kappa=0.5)
 
@@ -365,7 +365,6 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, *
                     q0 = qprime.copy()
                     queue.put(q0)
                     accepted += 1
-#                    yield q0
             
             n += nprime
             s = sprime * (jnp.dot(p_sharp_l, p_l) > 0) * (jnp.dot(p_sharp_r, p_r) > 0)
@@ -373,7 +372,6 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, *
             
         counter += 1
         acceptance = accepted / counter
-#        pbar.set_postfix({"acceptance rate": f"{acceptance:.3f}"})
         
         if counter < n_train:
             step_size, _ = tuner.update(acceptance)
@@ -464,9 +462,9 @@ if __name__=="__main__":
     dim = 2
     n_processes = 6
     rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
-    n_steps = 2000
+    n_steps = 1000
     n_leaps = 200
-    step_size = 0.03
+    step_size = 0.01
     
     q0 = jnp.array([-3.,2.])#rng[0].uniform(-5,5,size=dim)#
     
@@ -523,6 +521,7 @@ if __name__=="__main__":
     
     pbar = tqdm(total = n_steps*n_processes)
     qs = np.zeros((n_steps*n_processes, dim))
+    
     for i in range(n_steps*n_processes):
         qs[i] = queue.get()
         pbar.update(1)
@@ -551,7 +550,7 @@ if __name__=="__main__":
     ax.plot(data2[0],data2[1], 'o', color='r', zorder=101)
     
     C = ax.contour(X, Y, Z, 32)
-    ax.plot(qs[:,0],qs[:,1],markersize=2,color='green',marker='o',alpha=0.5)
+    ax.plot(qs[:,0],qs[:,1],markersize=2,color='green',marker='o',alpha=0.5,linestyle=None)
     fig.colorbar(C)
     fig.savefig("likelihood.pdf", bbox_inches='tight')
     

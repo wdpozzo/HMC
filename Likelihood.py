@@ -1,3 +1,7 @@
+import ray
+from ray.util.queue import Queue
+ray.init(ignore_reinit_error=True)
+
 from astropy import constants as const
 M_sun = const.M_sun.value
 G = const.G.value
@@ -197,7 +201,7 @@ def TaylorF2(params, frequency_array):
 
       
     Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(6.505442867400122), np.float64(-0.4819802030544022)
-#    Mc, q = params[0], params[1],
+#    Mc, q = Masses2McQ(m1, m2)
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
 #    costheta_jn = np.float64(-0.4819802030544022)
@@ -562,7 +566,7 @@ if __name__=="__main__":
     detectors = detector_constructor(["H1"], channel =None)
     
     q_inj = np.array([
-                        np.float64(18.2289012101475),
+                        np.float64(20.2289012101475),
                        np.float64(0.828497064389393),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
@@ -574,29 +578,24 @@ if __name__=="__main__":
                        ])
     
     q0 = np.array([
-                       np.float64(18.6),
+                       np.float64(19.6),
                        np.float64(0.88)
                        ])
 
 #    q0 = q_inj[:2]
-    import matplotlib.pyplot as plt
-#    plt.plot(detectors[0]["Frequency"], detectors[0]["FrequencySeries"])
+
     snr, h_inj = inject_signal_in_noise(q_inj, detectors[0])
-#    
-#    plt.plot(detectors[0]["Frequency"], h_inj)
-#    plt.show()
-#    exit()
-#    check_posterior(detectors[0])
-#    exit()
+
     logp = jax.jit(partial(log_posterior, detector_list = detectors))#jax.jit()
 
     from hmc_func import test_integrator, compute_mass_matrix
     
 #    print(logp(q0))
-    rng = np.random.default_rng(seed = 32)
-    n_steps = 10000
+    n_steps = 100
     n_leaps = 50
     step_size = 0.3
+    n_processes = 2
+    rng = [np.random.default_rng(seed = 1+j) for j in range(n_processes)]
     
 #    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
 #    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
@@ -605,7 +604,21 @@ if __name__=="__main__":
     
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
-    qs = run_nuts_rmhmc(q0, n_steps, step_size, logp, rng)
+    queue = Queue()
+    
+    q0s = np.column_stack((rng[0].uniform(15.0,25.0,size=n_processes),rng[0].uniform(0.5,1.0,size=n_processes)))
+#    print(q0s)
+#    exit()
+    chains = [run_nuts_rmhmc.remote(q0s[j], n_steps, step_size, logp, rng[j], queue) for j in range(n_processes)]
+    
+    from tqdm import tqdm
+    pbar = tqdm(total = n_steps*n_processes)
+    qs = np.zeros((n_steps*n_processes, 2))
+    
+    for i in range(n_steps*n_processes):
+        qs[i] = queue.get()
+        pbar.update(1)
+
 
     from raynest.nest2pos import autocorrelation, acl
     
@@ -616,7 +629,7 @@ if __name__=="__main__":
     qs = qs[::thinning]
 
     x = np.linspace(10,30,200)
-    y = np.linspace(0.1,1.0,200)
+    y = np.linspace(0.5,1.0,200)
     Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
     X, Y = np.meshgrid(x,y)
