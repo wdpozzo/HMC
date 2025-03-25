@@ -181,17 +181,23 @@ def _ab_factors(g_, lat, ra, dec, lst):
     slat  = jnp.sin(lat)
     c2lat = jnp.cos(2*lat)
     s2lat = jnp.sin(2*lat)
+    ra_lst = ra - lst
+    cra_lst = jnp.cos(ra_lst)
+    sra_lst = jnp.sin(ra_lst)
+    two_ra_lst = 2*ra_lst
+    c2ra_lst = jnp.cos(two_ra_lst)
+    s2ra_lst = jnp.sin(two_ra_lst)
     
-    a_ = (1/16)*s2g*(3-c2lat)*(3-c2dec)*jnp.cos(2*(ra - lst))-\
-         (1/4)*c2g*slat*(3-c2dec)*jnp.sin(2*(ra - lst))+\
-         (1/4)*s2g*s2lat*s2dec*jnp.cos(ra - lst)-\
-         (1/2)*c2g*clat*s2dec*jnp.sin(ra - lst)+\
+    a_ = (1/16)*s2g*(3-c2lat)*(3-c2dec)*c2ra_lst-\
+         (1/4)*c2g*slat*(3-c2dec)*s2ra_lst+\
+         (1/4)*s2g*s2lat*s2dec*cra_lst-\
+         (1/2)*c2g*clat*s2dec*sra_lst+\
          (3/4)*s2g*(clat**2)*(cdec**2)
 
-    b_ = c2g*slat*sdec*jnp.cos(2*(ra - lst))+\
-         (1/4)*s2g*(3-c2lat)*sdec*jnp.sin(2*(ra - lst))+\
-                 c2g*clat*cdec*jnp.cos(ra - lst)+\
-         (1/2)*s2g*s2lat*cdec*jnp.sin(ra - lst)
+    b_ = c2g*slat*sdec*c2ra_lst+\
+         (1/4)*s2g*(3-c2lat)*sdec*s2ra_lst+\
+                 c2g*clat*cdec*cra_lst+\
+         (1/2)*s2g*s2lat*cdec*sra_lst
 
 
     return a_, b_
@@ -597,7 +603,7 @@ if __name__=="__main__":
     n_steps = 100
     n_leaps = 50
     step_size = 0.3
-    n_processes = 2
+    n_processes = 4
     rng = [np.random.default_rng(seed = 1+j) for j in range(n_processes)]
     
 #    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)

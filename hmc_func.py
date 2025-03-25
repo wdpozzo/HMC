@@ -1,19 +1,25 @@
+import os
+
 import ray
 from ray.util.queue import Queue
+#from queue import Queue
 ray.init(ignore_reinit_error=True)
 
 
 import numpy as np
+import jax
+import jax.random as random
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
+from jaxopt import AndersonAcceleration, FixedPointIteration
+
 from scipy.stats import multivariate_normal
 from tqdm import tqdm
 from functools import partial
-from scipy.special import logsumexp
-import os
+
 import h5py
-import jax
+
 from raynest.nest2pos import autocorrelation, acl
-from jaxopt import AndersonAcceleration, FixedPointIteration
 
 class DualAveragingStepSize:
     
@@ -92,7 +98,7 @@ def softabs_lambda(lambdas, alpha):
     return lambdas / jnp.tanh(alpha * lambdas)
 
 @jax.jit
-def softabs_metric(H, alpha=1e-7):
+def softabs_metric(H, alpha=1.0):
     """
     Compute the SoftAbs metric tensor given a potential energy function U.
     
@@ -143,7 +149,6 @@ def compute_mass_matrix(hessian, q):
     
     mass_matrix = symmetrise(-hessian(q))#+1e-6*jnp.eye(q.shape[0])
     sign, logdet = jnp.linalg.slogdet(mass_matrix)
-#    jax.debug.print("sign = {sign}", sign=sign)
     
     def softabs_case(_):
         return softabs_metric(mass_matrix)
@@ -152,7 +157,7 @@ def compute_mass_matrix(hessian, q):
         return mass_matrix
         
     mass_matrix = jax.lax.cond(sign < 0.0, softabs_case, identity_case, None)
-    inverse_mass_matrix = jnp.linalg.inv(mass_matrix)#make_positive_definite()
+    inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
     logdet = jnp.linalg.slogdet(mass_matrix)[1]
     
     return mass_matrix, inverse_mass_matrix, logdet
@@ -175,13 +180,12 @@ def implicit_midpoint(p0, q0, log_probability, step_size):
         return jnp.concatenate([eq1, eq2])
         
     z_initial = jnp.concatenate([p0, q0])
-    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
-                               history_size=5,
-                               ridge=1e-6,
-                               tol=1e-5)
-#    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
+#    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
+#                               history_size=5,
+#                               ridge=1e-6,
+#                               tol=1e-5)
+    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
                                
-#    sol = fixed_point_iter(equations_of_motion, z_initial)#, maxiter=10, history_size=5)
     sol = fpi.run(z_initial).params
     p_next, q_next = jnp.split(sol, 2)
     _, inv_m, _ = compute_mass_matrix(jax.hessian(log_probability), q_next)
@@ -215,7 +219,7 @@ def generalized_leap_frog(log_probability, step_size, p0, q0, inverse_mass_matri
 
     return p, q, inverse_mass_matrix
     
-def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, rng):
+def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
 #        print("j = ",j, "logu = ",logu)
     if j == 0:
         # Base case: Take one leapfrog step in the direction of v
@@ -234,24 +238,36 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, rng):
     
     else:
         # Recursion: Build the left and right subtrees
-        pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p, q, inverse_metric, logu, v, j-1, dt, log_probability, rng)
+        key, subkey = random.split(key)
+        pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p, q, inverse_metric, logu, v, j-1, dt, log_probability, subkey)
+
+        p_sharp_l = jnp.zeros_like(q0)
+        p_sharp_r = jnp.zeros_like(q0)
 
         if sprime:
 #                print("recursing j =",j, sprime)
             if v == -1:
-                pprime_l, qprime_l, inverse_metric_l, _, _, _, qpprime, npprime, spprime = build_tree(pprime_l, qprime_l, inverse_metric_l, logu, v, j-1, dt, log_probability, rng)
+                subkey, left_key = random.split(subkey)
+                pprime_l, qprime_l, inverse_metric_l, _, _, _, qpprime, npprime, spprime = build_tree(pprime_l, qprime_l, inverse_metric_l, logu, v, j-1, dt, log_probability, left_key)
+                p_sharp_l += p_l
             else:
-                _, _, _, pprime_r, qprime_r, inverse_metric_r, qpprime, npprime, spprime = build_tree(pprime_r, qprime_r, inverse_metric_r, logu, v, j-1, dt, log_probability, rng)
+                subkey, right_key = random.split(subkey)
+                _, _, _, pprime_r, qprime_r, inverse_metric_r, qpprime, npprime, spprime = build_tree(pprime_r, qprime_r, inverse_metric_r, logu, v, j-1, dt, log_probability, right_key)
+                p_sharp_r += p_r
             
 #                print("nprime = {} npprime = {}".format(nprime,npprime))
-            if rng.uniform() < npprime/max(nprime+npprime,1):
+            subkey, subsubkey = random.split(subkey)
+            
+            if random.uniform(subsubkey) < npprime/max(nprime+npprime,1):
                 qprime = qpprime
             
             delta_q = qprime_r-qprime_l
-            cond1  = np.dot(delta_q.T,pprime_l)>=0
-            cond2  = np.dot(delta_q.T,pprime_r)>=0
-            sprime = spprime*(np.logical_and(cond1,cond2))
+            sprime  = spprime * (jnp.dot(p_sharp_l, p_l) < 0) * (jnp.dot(p_sharp_r, p_r) < 0)
+#            cond1  = np.dot(delta_q.T,pprime_l)>=0
+#            cond2  = np.dot(delta_q.T,pprime_r)>=0
+#            sprime = spprime*(np.logical_and(cond1,cond2))
             nprime = nprime + npprime
+            
         return pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime
 
 #@ray.remote
@@ -311,57 +327,64 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
     return qs
 
 @ray.remote
-def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, **kwargs):
+def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, **kwargs):
     """
     termination condition from 
     https://arxiv.org/pdf/1304.1920"
     """
-    n_train = np.minimum(n_steps//10,5000)
-#    print("training length =", n_train)
+    n_train = np.minimum(n_steps//10,5000)*0
 
-    qs = np.zeros((2*n_steps,q0.shape[0]))
+    qs = np.zeros((n_steps,q0.shape[0]))
     counter = 0
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
-#    print("initial point = {}".format(q0))
-#    print("initial metric estimate = {}".format(inverse_metric_0))
-#    print("determinant =", jnp.linalg.slogdet(inverse_metric_0))
     
     tuner = DualAveragingStepSize(step_size, target_accept=0.5, gamma=0.1, t0=10.0, kappa=0.5)
 
-    p_sharp_l = jnp.zeros_like(q0)
-    p_sharp_r = jnp.zeros_like(q0)
     accepted = 0
     acceptance = 0.0
     
-    while accepted < n_steps:
-    
-        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
+    while True:
+        
+        key, subkey = random.split(key)
+        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T, random.normal(subkey, shape=q0.shape[0]))
         logP = log_probability(q0) - kinetic_energy(p0, inverse_metric_0)
         logu = logP - rng.exponential()
 
         q_l, q_r = q0.copy(), q0.copy()
         p_l, p_r = p0.copy(), p0.copy()
         inverse_metric_l, inverse_metric_r = inverse_metric_0.copy(), inverse_metric_0.copy()
+        
+        p_sharp_l = jnp.zeros_like(q0)
+        p_sharp_r = jnp.zeros_like(q0)
+        
         j, s, n = 0, 1, 1
 
         while s == 1:
-            v = rng.choice((-1, 1))
+            
+            key, subkey = random.split(subkey)
+            v = random.choice(subkey, jnp.array([-1,1]))
 
             if v == -1:
-                p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, rng)
+                subkey, left_key = random.split(subkey)
+                p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, left_key)
                 p_sharp_l += p_l
             else:
-                _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, rng)
+                subkey, right_key = random.split(subkey)
+                _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, right_key)
                 p_sharp_r += p_r
                 
             if sprime:
             
                 alpha = min(1, nprime / n)
+                subkey, subsubkey = random.split(subkey)
                 
-                if rng.uniform() < alpha:
+                if random.uniform(subsubkey) < alpha:
 
                     q0 = qprime.copy()
-                    queue.put(q0)
+                    
+                    if counter > n_train:
+                        queue.put(q0)
+                    
                     accepted += 1
             
             n += nprime
@@ -376,7 +399,13 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, rng, queue, *args, *
 
         if counter == n_train:
             _, step_size = tuner.update(acceptance)
-    
+            accepted = 0
+        
+        if accepted == n_steps+1:
+            break
+        
+#        print("counter = {} accepted = {} step size = {}".format(counter, accepted, step_size))
+
     qs = qs[n_train:n_steps]
     
     return qs
@@ -447,8 +476,6 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
     fig1.colorbar(C, label = "log curvature")
     C = ax4.pcolormesh(X, Y, K.T, alpha = 0.5, cmap=cm.coolwarm)
     
-
-    
 #    ax.plot(qs_i[:,0],qs_i[:,1],'o-', color='green', label = "IM")
     fig1.legend()
     
@@ -458,36 +485,43 @@ if __name__=="__main__":
     
     dim = 2
     n_processes = 6
-    rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
-    n_steps = 2000
-    n_leaps = 200
-    step_size = 0.03
+    seed = 111
     
-    q0 = jnp.array([-3.,2.])#rng[0].uniform(-5,5,size=dim)#
+    key = random.PRNGKey(seed)
+    subkeys = random.split(key, num=n_processes)
+
+#    rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
+    n_steps = 1000
+    n_leaps = 200
+    step_size = 1.9
+    
+    
+    rng = np.random.default_rng(seed = seed)
+    q0  = rng.uniform(-5,5,size=dim)#
     
     from scipy.stats import random_correlation
     
-    eigs        = rng[0].uniform(1,100,len(q0))
+    eigs        = rng.uniform(1,100,len(q0))
     eigs        = np.array(len(q0)*eigs/np.sum(eigs))
-    cov         = random_correlation.rvs(eigs, random_state=rng[0])
+    cov         = random_correlation.rvs(eigs, random_state=rng)
     inv_cov     = np.linalg.inv(cov)
-    data  = rng[0].uniform(-5,5,size=dim)
+    data        = rng.uniform(-5,5,size=dim)
     
     def log_posterior(q, data, inv_cov):
         r = (data - q)
         return -0.5*jnp.dot(r.T,jnp.dot(inv_cov,r))
     
-    eigs1        = rng[0].uniform(1,100,len(q0))
+    eigs1        = rng.uniform(1,100,len(q0))
     eigs1        = np.array(len(q0)*eigs1/np.sum(eigs1))
-    cov1         = random_correlation.rvs(eigs1, random_state=rng[0])
+    cov1         = random_correlation.rvs(eigs1, random_state=rng)
     inv_cov1     = np.linalg.inv(cov)
-    data1        = jnp.array([2.0,2.0])
+    data1        = jnp.array([3.0]*dim)
     
-    eigs2        = rng[0].uniform(1,10,len(q0))
+    eigs2        = rng.uniform(1,10,len(q0))
     eigs2        = np.array(len(q0)*eigs/np.sum(eigs))
-    cov2         = random_correlation.rvs(eigs, random_state=rng[0])
+    cov2         = random_correlation.rvs(eigs, random_state=rng)
     inv_cov2     = np.linalg.inv(cov2)
-    data2        = jnp.array([-2.0,-2.0])
+    data2        = jnp.array([-3.0]*dim)
 
     from jax.scipy.special import logsumexp
     
@@ -512,16 +546,17 @@ if __name__=="__main__":
     from tqdm import tqdm
     
     queue = Queue()
-    
-    chains = [run_nuts_rmhmc.remote(rng[j].uniform(-5,5,size=dim), n_steps, step_size, logp, rng[j], queue) for j in range(n_processes)]
-                  #ray.get([)
+
+    chains = [run_nuts_rmhmc.remote(rng.uniform(-5,5,size=dim), n_steps, step_size, logp, subkeys[j], queue) for j in range(n_processes)]
     
     pbar = tqdm(total = n_steps*n_processes)
     qs = np.zeros((n_steps*n_processes, dim))
+    n = 0
     
-    for i in range(n_steps*n_processes):
-        qs[i] = queue.get()
+    while n < n_steps*n_processes:
+        qs[n] = queue.get()
         pbar.update(1)
+        n += 1
 
     thinning = int(max([acl(q) for q in qs.T]))
     
@@ -534,6 +569,12 @@ if __name__=="__main__":
     print("indipendent samples = ",qs.shape[0])
     
     import matplotlib.pyplot as plt
+    from corner import corner
+    
+    corner(qs, labels=None, quantiles=[0.05, 0.5, 0.95], truths = data,
+                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
+    
+    plt.savefig("corner.pdf",bbox_inches='tight')
     
     x = np.linspace(-5.,5.,200)
     y = np.linspace(-5.,5.,200)
@@ -550,12 +591,5 @@ if __name__=="__main__":
     ax.plot(qs[:,0],qs[:,1],markersize=2,color='green',marker='o',alpha=0.5,linestyle=None)
     fig.colorbar(C)
     fig.savefig("likelihood.pdf", bbox_inches='tight')
-
-    from corner import corner
-    corner(qs,
-                        labels=None,
-                        quantiles=[0.05, 0.5, 0.95], truths = data,
-                        show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
-    plt.savefig("corner.pdf",bbox_inches='tight')
     plt.show()
