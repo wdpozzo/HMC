@@ -8,6 +8,7 @@ G = const.G.value
 c = const.c.value
 pc = const.pc.value
 import jax.numpy as jnp
+import jax.random as random
 import numpy as np
 from functools import partial
 import jax
@@ -30,10 +31,10 @@ def log_prior(params):
     # chirp mass and mass ratio
 #    mc      = params[4]
 #    q       = params[5]
-    mc      = params[0]
-    q       = params[1]
-    logP   += jnp.log(mc)
-    logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
+#    mc      = params[0]
+#    q       = params[1]
+#    logP   += jnp.log(mc)
+#    logP   += (2./5.)*jnp.log(1.0+q)-(6./5.)*jnp.log(q)
     return logP
 
 def in_bounds(param, bounds):
@@ -59,7 +60,7 @@ def log_posterior(params, detector_list):
     
     return  log_prior(params) + log_likelihood(params, detector_list)
 
-#        @partial(jax.jit, static_argnums = (0))
+#@partial(jax.jit, static_argnums = (1))
 def log_likelihood(params, detector_list):
     # Ensure the list of log-likelihoods is a JAX array
     log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_list])
@@ -206,8 +207,12 @@ def TaylorF2(params, frequency_array):
     # Extract parameters
 
       
-    Mc, q, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(6.505442867400122), np.float64(-0.4819802030544022)
-#    Mc, q = Masses2McQ(m1, m2)
+    m1, m2, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(7.505442867400122), np.float64(-0.4819802030544022)
+    
+#    if m2 > m1:
+#        m1, m2 = m2, m1
+        
+    Mc, q = Masses2McQ(m1, m2)
 #    phi_c = np.float64(2.970836395983002)
 #    logdistance = np.float64(6.295442867400122)
 #    costheta_jn = np.float64(-0.4819802030544022)
@@ -492,7 +497,8 @@ def check_posterior(detector_dictionary):
         for j in range(y.shape[0]):
             params = np.hstack((x[i],y[j]))
             Z[i,j] = logP(params)
-#            print("{} {} mc = {} q = {} H = {} invM = {}".format(i,j,x[i],y[j], np.linalg.inv(H(params)), compute_mass_matrix(H, params)[1]))
+            _, iM, ld = compute_mass_matrix(H, params)
+            print("{} {} mc = {} q = {} invM = {} logdet = {}".format(i,j,x[i],y[j],iM,ld))
 
     X, Y = np.meshgrid(x, y)
     import matplotlib.pyplot as plt
@@ -559,6 +565,7 @@ def inject_signal_in_noise(params,
 
 
 if __name__=="__main__":
+
     available_detectors = {
         'V1': [43.63, 10.5, 115.56, 90.],
         'H1': [46.45, -119.41, 170.9, 90.],
@@ -571,41 +578,47 @@ if __name__=="__main__":
 
     from hmc_func import run_nuts_rmhmc, run_rmhmc
 
-    detectors = detector_constructor(["H1"], channel =None)
+    detectors = detector_constructor(["H1"], channel=None)
     default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
     
     q_inj = np.array([
-                        np.float64(20.2289012101475),
-                       np.float64(0.828497064389393),
+                        np.float64(40.2289012101475),
+                       np.float64(36.828497064389393),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
                        np.float64(-0.4819802030544022),
                        np.float64(1.5720689487945567),
-                       np.float64(6.505442867400122)
+                       np.float64(7.505442867400122)
                        ])
     
     q0 = np.array([
-                       np.float64(19.6),
-                       np.float64(0.88)
+                       np.float64(39.6),
+                       np.float64(36.88)
                        ])
 
 #    q0 = q_inj[:2]
 
     snr, h_inj = inject_signal_in_noise(q_inj, detectors[0])
 
-    logp = jax.jit(partial(log_posterior, detector_list = detectors))#jax.jit()
+    logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-#    print(logp(q0))
-    n_steps = 100
+    n_steps = 100000
     n_leaps = 50
-    step_size = 0.3
-    n_processes = 4
-    rng = [np.random.default_rng(seed = 1+j) for j in range(n_processes)]
+    step_size = 1.0
+    n_processes = 6
+    seed        = 33
     
+    key = random.PRNGKey(seed)
+    subkeys = random.split(key, num=n_processes)
+    
+    rng = np.random.default_rng(seed = seed)
+    
+#    check_posterior(detectors[0])
+#    exit()
 #    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
 #    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
 #    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
@@ -615,19 +628,25 @@ if __name__=="__main__":
     
     queue = Queue()
     
-    q0s = np.column_stack((rng[0].uniform(15.0,25.0,size=n_processes),rng[0].uniform(0.5,1.0,size=n_processes)))
+    q0s = rng.normal(0.0,1.0,size=(n_processes,2))+q0
+    
+    print("initial starting points:")
+    for q0 in q0s:
+        print("q0 = {}".format(q0))
 #    print(q0s)
 #    exit()
-    chains = [run_nuts_rmhmc.remote(q0s[j], n_steps, step_size, logp, rng[j], queue) for j in range(n_processes)]
+
+    chains = [run_nuts_rmhmc.remote(q0s[j], n_steps, step_size, logp, subkeys[j], queue) for j in range(n_processes)]
     
     from tqdm import tqdm
     pbar = tqdm(total = n_steps*n_processes)
     qs = np.zeros((n_steps*n_processes, 2))
     
     for i in range(n_steps*n_processes):
-        qs[i] = queue.get()
+        q_ = queue.get()
+        print(i, q_, queue.qsize())
+        qs[i] = q_
         pbar.update(1)
-
 
     from raynest.nest2pos import autocorrelation, acl
     
@@ -636,9 +655,10 @@ if __name__=="__main__":
         thinning = 1
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
+    print("independent samples = {}".format(qs.shape[0]))
 
-    x = np.linspace(10,30,200)
-    y = np.linspace(0.5,1.0,200)
+    x = np.linspace(35,45,200)
+    y = np.linspace(35,45,200)
     Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
     X, Y = np.meshgrid(x,y)

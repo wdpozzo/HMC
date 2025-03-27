@@ -3,7 +3,7 @@ import os
 import ray
 from ray.util.queue import Queue
 #from queue import Queue
-ray.init(ignore_reinit_error=True)
+#ray.init(ignore_reinit_error=True)
 
 
 import numpy as np
@@ -98,7 +98,7 @@ def softabs_lambda(lambdas, alpha):
     return lambdas / jnp.tanh(alpha * lambdas)
 
 @jax.jit
-def softabs_metric(H, alpha=1.0):
+def softabs_metric(H, alpha=1e-1):
     """
     Compute the SoftAbs metric tensor given a potential energy function U.
     
@@ -220,17 +220,16 @@ def generalized_leap_frog(log_probability, step_size, p0, q0, inverse_mass_matri
     return p, q, inverse_mass_matrix
     
 def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
-#        print("j = ",j, "logu = ",logu)
+
     if j == 0:
         # Base case: Take one leapfrog step in the direction of v
-#            print("before leap frog",p, q)
         """
         pprime, qprime, inverse_metric = generalized_leap_frog(log_probability, dt, p, q, inverse_metric)
         """
         pprime, qprime, inverse_metric = implicit_midpoint(p, q, log_probability, dt)
 #            print("after leap frog",pprime, qprime)
         logH = log_probability(qprime) - kinetic_energy(pprime, inverse_metric)
-#            print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
+#        print("base level ",pprime, qprime, logH, logu, logu <= logH, logH > logu - 1000)
         nprime = int(logu <= logH)
         sprime = int(logH > logu - 1000)
 #            print("leaf in the tree =",pprime, qprime, pprime, qprime, qprime, nprime, sprime)
@@ -241,31 +240,28 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
         key, subkey = random.split(key)
         pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p, q, inverse_metric, logu, v, j-1, dt, log_probability, subkey)
 
-        p_sharp_l = jnp.zeros_like(q0)
-        p_sharp_r = jnp.zeros_like(q0)
+        p_sharp_l = jnp.zeros_like(q)
+        p_sharp_r = jnp.zeros_like(q)
 
         if sprime:
-#                print("recursing j =",j, sprime)
+
             if v == -1:
-                subkey, left_key = random.split(subkey)
+                left_key, subkey = random.split(subkey)
                 pprime_l, qprime_l, inverse_metric_l, _, _, _, qpprime, npprime, spprime = build_tree(pprime_l, qprime_l, inverse_metric_l, logu, v, j-1, dt, log_probability, left_key)
-                p_sharp_l += p_l
+                p_sharp_l += pprime_l
             else:
-                subkey, right_key = random.split(subkey)
+                right_key, subkey = random.split(subkey)
                 _, _, _, pprime_r, qprime_r, inverse_metric_r, qpprime, npprime, spprime = build_tree(pprime_r, qprime_r, inverse_metric_r, logu, v, j-1, dt, log_probability, right_key)
-                p_sharp_r += p_r
+                p_sharp_r += pprime_r
             
-#                print("nprime = {} npprime = {}".format(nprime,npprime))
             subkey, subsubkey = random.split(subkey)
             
             if random.uniform(subsubkey) < npprime/max(nprime+npprime,1):
                 qprime = qpprime
             
             delta_q = qprime_r-qprime_l
-            sprime  = spprime * (jnp.dot(p_sharp_l, p_l) < 0) * (jnp.dot(p_sharp_r, p_r) < 0)
-#            cond1  = np.dot(delta_q.T,pprime_l)>=0
-#            cond2  = np.dot(delta_q.T,pprime_r)>=0
-#            sprime = spprime*(np.logical_and(cond1,cond2))
+            sprime  = spprime * (jnp.dot(p_sharp_l, pprime_l) < 0) * (jnp.dot(p_sharp_r, pprime_r) < 0)
+
             nprime = nprime + npprime
             
         return pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime
@@ -332,9 +328,8 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
     termination condition from 
     https://arxiv.org/pdf/1304.1920"
     """
-    n_train = np.minimum(n_steps//10,5000)*0
+    n_train = jnp.minimum(n_steps//10,5000)*0
 
-    qs = np.zeros((n_steps,q0.shape[0]))
     counter = 0
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
     
@@ -346,9 +341,12 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
     while True:
         
         key, subkey = random.split(key)
-        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T, random.normal(subkey, shape=q0.shape[0]))
+        
+        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T, random.normal(subkey, shape=(q0.shape[0],)))
         logP = log_probability(q0) - kinetic_energy(p0, inverse_metric_0)
-        logu = logP - rng.exponential()
+        
+        key, subkey = random.split(subkey)
+        logu = logP - random.exponential(subkey)
 
         q_l, q_r = q0.copy(), q0.copy()
         p_l, p_r = p0.copy(), p0.copy()
@@ -359,16 +357,22 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
         
         j, s, n = 0, 1, 1
 
+#        jax.debug.print("counter = {} accepted = {} step size = {}".format(counter, accepted, step_size))
+#        jax.debug.print("logP = {} logu = {} step size = {}".format(counter, accepted, step_size))
+#        jax.debug.print("j = {} s = {} n = {}".format(j, s, n))
         while s == 1:
             
             key, subkey = random.split(subkey)
             v = random.choice(subkey, jnp.array([-1,1]))
 
             if v == -1:
+            
                 subkey, left_key = random.split(subkey)
                 p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, left_key)
                 p_sharp_l += p_l
+            
             else:
+            
                 subkey, right_key = random.split(subkey)
                 _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, right_key)
                 p_sharp_r += p_r
@@ -383,7 +387,7 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
                     q0 = qprime.copy()
                     
                     if counter > n_train:
-                        queue.put(q0)
+                        queue.put_nowait(q0)
                     
                     accepted += 1
             
@@ -405,10 +409,7 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
             break
         
 #        print("counter = {} accepted = {} step size = {}".format(counter, accepted, step_size))
-
-    qs = qs[n_train:n_steps]
-    
-    return qs
+    return
 
 def test_integrator(p0, q0, steps, dt, logp, inv_m):
 
@@ -483,7 +484,7 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
 
 if __name__=="__main__":
     
-    dim = 2
+    dim = 10
     n_processes = 6
     seed = 111
     
