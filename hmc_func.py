@@ -52,37 +52,7 @@ class DualAveragingStepSize:
         # Return both the noisy step size, and the smoothed step size
         return np.exp(log_step), np.exp(self.log_averaged_step)
 
-def find_reasonable_time_step(q0, log_probability, rng):
-    """
-    algorithm 4 in https://sites.stat.columbia.edu/gelman/research/published/nuts.pdf
-    """
-    
-    step_size = 1.0
-    _, inv_m0, _ = compute_mass_matrix(jax.hessian(log_probability), q0)
-    p0 = jnp.dot(np.linalg.cholesky(inv_m0).T,rng.normal(size=q0.shape[0]))
-    p, q, inv_m  = implicit_midpoint(p0, q0, log_probability, step_size)
-    
-    log_mh_ratio = (log_probability(q0)-kinetic_energy(p0, inv_m0)) - \
-                   (log_probability(q)-kinetic_energy(p, inv_m))
-                
-    def condition(a, log_mh_ratio):
-        return a*log_mh_ratio > -a*np.log(2)
-    
-    if condition(1.0, log_mh_ratio):
-        a = 1.0
-    else:
-        a = -1.0
 
-    while condition(a, log_mh_ratio):
-        step_size = step_size*2**a
-        print(step_size)
-        p, q, inv_m  = implicit_midpoint(p0, q0, log_probability, step_size)
-        print(p, q, inv_m)
-        log_mh_ratio = (log_probability(q0)-kinetic_energy(p0, inv_m0)) - \
-                       (log_probability(q)-kinetic_energy(p, inv_m))
-        print(a,log_mh_ratio)
-        
-    return step_size
 
 @jax.jit
 def softabs_lambda(lambdas, alpha):
@@ -98,7 +68,7 @@ def softabs_lambda(lambdas, alpha):
     return lambdas / jnp.tanh(alpha * lambdas)
 
 @jax.jit
-def softabs_metric(H, alpha=1e-1):
+def softabs_metric(H, alpha=1e-2):
     """
     Compute the SoftAbs metric tensor given a potential energy function U.
     
@@ -147,58 +117,61 @@ def symmetrise(A):
 def compute_mass_matrix(hessian, q):
     """ see https://arxiv.org/pdf/1212.4693"""
     
-    mass_matrix = symmetrise(-hessian(q))#+1e-6*jnp.eye(q.shape[0])
-    sign, logdet = jnp.linalg.slogdet(mass_matrix)
-    
-    def softabs_case(_):
-        return softabs_metric(mass_matrix)
+    mass_matrix = make_positive_definite(symmetrise(-hessian(q)))#+1e-6*jnp.eye(q.shape[0])
+    # sign, logdet = jnp.linalg.slogdet(mass_matrix)
 
-    def identity_case(_):
-        return mass_matrix
+    
+    # def softabs_case(_):
+    #     return softabs_metric(mass_matrix)
+
+    # def identity_case(_):
+    #     return mass_matrix
         
-    mass_matrix = jax.lax.cond(sign < 0.0, softabs_case, identity_case, None)
+    # mass_matrix = jax.lax.cond(sign < 0.0, softabs_case, identity_case, None)
     inverse_mass_matrix = jnp.linalg.inv(mass_matrix)
     logdet = jnp.linalg.slogdet(mass_matrix)[1]
     
     return mass_matrix, inverse_mass_matrix, logdet
 
 @partial(jax.jit, static_argnums = (2))
-def hamiltonian(p, q, log_probability):
-    _, inverse_metric, logdet = compute_mass_matrix(jax.hessian(log_probability), q)
+def hamiltonian(p, q, log_probability, inverse_metric=None):
+    logdet = jnp.linalg.slogdet(inverse_metric)[1]
+    # _, inverse_metric, logdet = compute_mass_matrix(jax.hessian(log_probability), q)
     return kinetic_energy(p, inverse_metric) + 0.5*logdet - log_probability(q)
 
 @partial(jax.jit, static_argnums = (2))
-def implicit_midpoint(p0, q0, log_probability, step_size):
+def implicit_midpoint(p0, q0, log_probability, step_size, inverse_metric=None):
     """ from https://github.com/matt-graham/mici/tree/main and references therein"""
     nablaHq = jax.grad(hamiltonian, argnums=1)
     nablaHp = jax.grad(hamiltonian, argnums=0)
     
     def equations_of_motion(z):
         p, q = jnp.split(z, 2)
-        eq1 = p0 + step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability)
-        eq2 = q0 - step_size * nablaHp(0.5*(p+p0), 0.5*(q+q0), log_probability)
+        eq1 = p0 + step_size * nablaHq(0.5*(p+p0), 0.5*(q+q0), log_probability, inverse_metric)
+        eq2 = q0 - step_size * nablaHp(0.5*(p+p0),0.5*(q+q0), log_probability, inverse_metric)
         return jnp.concatenate([eq1, eq2])
         
-    z_initial = jnp.concatenate([p0, q0])
-#    fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
-#                               history_size=5,
-#                               ridge=1e-6,
-#                               tol=1e-5)
-    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion)
+    z_initial = jnp.concatenate([p0+step_size*p0, q0+step_size*q0])
+    # fpi = AndersonAcceleration(fixed_point_fun=equations_of_motion,
+    #                             history_size=5,
+    #                             ridge=1e-6,
+    #                             tol=1e-5)
+    fpi = FixedPointIteration(fixed_point_fun=equations_of_motion,tol=1e-10)
                                
     sol = fpi.run(z_initial).params
     p_next, q_next = jnp.split(sol, 2)
+
     _, inv_m, _ = compute_mass_matrix(jax.hessian(log_probability), q_next)
     return p_next, q_next, inv_m
 
-@partial(jax.jit, static_argnums = (0))
-def generalized_leap_frog(log_probability, step_size, p0, q0, inverse_mass_matrix_0):
-    
-    f_max = 1
+@partial(jax.jit, static_argnums = (2))
+def generalized_leap_frog(p0, q0, log_probability, step_size) :
+    _, inverse_mass_matrix_0,  _ = compute_mass_matrix(jax.hessian(log_probability), q0)
+    f_max = 4
     p = p0.copy()
     q = q0.copy()
     
-    nablaH = jax.grad(hamiltonian)
+    nablaH = jax.grad(hamiltonian, argnums=1)
     hessV  = jax.hessian(log_probability)
     DH = nablaH(p, q, log_probability)
     
@@ -267,9 +240,9 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
         return pprime_l, qprime_l, inverse_metric_l, pprime_r, qprime_r, inverse_metric_r, qprime, nprime, sprime
 
 #@ray.remote
-def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kwargs):
+def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, *args, **kwargs):
 
-    n_train = n_steps//2
+    n_train = 1000
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
     gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
@@ -277,58 +250,145 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, rng, *args, **kw
 
     from tqdm import tqdm
 
-    _, inverse_mass_matrix_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
-    print("initial metric estimate = {}".format(inverse_mass_matrix_0))
+    _, inverse_mass_matrix_0, logdet= compute_mass_matrix(jax.hessian(log_probability),q0)
+    print("initial metric estimate = {}, det = {}".format(inverse_mass_matrix_0, np.exp(logdet)))
     pbar = tqdm(total = n_steps)
-    
-#    tuner = DualAveragingStepSize(step_size, target_accept=0.9, gamma=0.05, t0=10.0, kappa=0.75)
+    # step_size  = np.linalg.det(inverse_mass_matrix_0)*50/n_leaps
+    # tuner = DualAveragingStepSize(step_size, target_accept=0.7, gamma=0.05, t0=10.0, kappa=0.75)
     
     i = 0
     
     while i < n_steps:
+        key = random.PRNGKey(counter) 
+ 
         counter += 1
-        p0 = jnp.dot(np.linalg.cholesky(inverse_mass_matrix_0).T,rng.normal(size=q0.shape[0]))
         
+        
+
+        p0 = jnp.dot(np.linalg.cholesky(inverse_mass_matrix_0).T, random.normal(key, shape=q0.shape[0]))
+        # print("p0",p0)
+        # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.9, random.choice(key, jnp.array([-1., 1.])*(p0*step_size)) ,p0)
+        # print("p0dopo",p0)
+        # print('invM',inverse_mass_matrix_0)
+        # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.9, random.choice(keyp0*2, p0)
+        # hessian = jax.hessian(log_probability)
+        # mass_matrix = symmetrise(-hessian(q0))#+1e-6*jnp.eye(q.shape[0])
+        # sign, logdet = jnp.linalg.slogdet(mass_matrix)
+        # print(sign)
+        
+        
+
+
+
+        
+        
+      
+
+        # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.9, -p0*10, p0)
+        # print( "p0dopo",random.uniform(key, shape=q0.shape[0]))
         p_ = p0
         q_ = q0
-        H0 = hamiltonian(p0, q0, log_probability)
-        
+        H0 = hamiltonian(p0, q0, log_probability, inverse_mass_matrix_0)
+        print("H0",H0)
+        h_values = []
+        p_values = []
+        q_values = []
         for k in range(n_leaps):
 #            p_, q_, g_ = generalized_leap_frog(logp, step_size, p_, q_, inverse_mass_matrix_0)
 #            print("pre - leap ",k,"p:",p_,"q:",q_,"invM:",compute_mass_matrix(jax.hessian(log_probability),q_)[1])
-            p_, q_, g_ = implicit_midpoint(p_, q_, log_probability, step_size)
-#            print("post - leap ",k,"p:",p_,"q:",q_,"invM:",g_)
-        
-        H     = hamiltonian(p_, q_, log_probability)
-        alpha = min(0.0,H0-H)
+            # p, q, g = implicit_midpoint(p_, q_, log_probability, step_size, inverse_mass_matrix_0)
+            h_values.append(hamiltonian(p_, q_, log_probability, inverse_mass_matrix_0))
+            p_values.append(p_)
+            q_values.append(q_)
+            p, q, g, = leap_frog(step_size, p_, q_, log_probability, bounds, inverse_mass_matrix_0)
 
-        if alpha > np.log(rng.uniform()):
+            # print("pre - leap ",k,"p:",p,"q:",q,"invM:",g)
+            if jnp.isnan(p).any() or jnp.isnan(q).any():
+                print("NAN")
+                break
+            else:
+                p_, q_, g_ = p, q, g
+#            print("post - leap ",k,"p:",p_,"q:",q_,"invM:",g_)
+        import matplotlib.pyplot as plt
+        # plt.plot(h_values, )
+        # plt.show()
+        # plt.close()
+
+        # plt.plot(np.array(q_values).T[0], np.array(p_values).T[1])
+        # plt.show()
+        # import sys
+        # sys.exit()
+        print("q0, q1",q0, q_)
+        H     = hamiltonian(-p_, q_, log_probability, inverse_mass_matrix_0)
+        
+        alpha = min(0, H0 - H)
+
+
+        print("alpha, rng",alpha, (random.uniform(key, shape=(1,), minval=0, maxval=1)))
+
+        if (alpha) > jnp.log(random.uniform(key, shape=(1,), minval=0, maxval=1)):
             ps[i], qs[i], gs[i] = p_, q_, g_
-            p0, q0, inverse_mass_matrix_0 =  p_, q_, g_
+            p0, q0, inverse_mass_matrix_0, =  p_, q_, g_ , 
+            print("accepted", q0)
+            # print('step size',np.linalg.det(inverse_mass_matrix_0))
+            # step_size = (step_size+ np.linalg.det(inverse_mass_matrix_0)*10/n_leaps)/2
+            
             i += 1
             pbar.update(1)
             
         acceptance = i/counter
-        pbar.set_postfix({"acceptance":acceptance})
+        pbar.set_postfix({"acceptance":acceptance, "step_size": step_size})
+        
 
-#        if counter < n_train:
-#            step_size, _ = tuner.update(acceptance)
-#            pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
-#
-#        if counter == n_train:
-#            _, step_size = tuner.update(acceptance)
+        # if counter < n_train:
+        #     step_size, _ = tuner.update(acceptance)
+            # pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
+
+        
+      
     
     qs = qs[n_train:]
 
     return qs
 
-@ray.remote
+@partial(jax.jit, static_argnums = (3))
+def leap_frog(dt, p0, q0, logp, bounds, metric):
+    p = p0.copy()
+    q = q0.copy()
+
+    grad_q = jax.grad(logp)(q)
+    p += 0.5 * dt * grad_q  # First half-step momentum update
+    q += dt * p  # Full-step position update
+
+        # Reflect q against bounds
+    lower_bounds, upper_bounds = bounds.T
+    over_upper = q > upper_bounds
+    under_lower = q < lower_bounds
+
+    reflect_factor = jnp.where(over_upper | under_lower, -1.0, 1.0)
+    q = jnp.where(q < lower_bounds, 2*lower_bounds-q, q)#np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+    q = jnp.where(q > upper_bounds, 2*upper_bounds-q, q)
+    
+    p *= reflect_factor 
+
+    
+ # Flip momentum for out-of-bound coordinates
+
+    # Final momentum update
+    grad_q = jax.grad(logp)(q)
+    p += 0.5 * dt * grad_q
+    _, g, _ = compute_mass_matrix(jax.hessian(logp),q)
+
+
+    return p, q, g,
+
+
 def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, **kwargs):
     """
     termination condition from 
     https://arxiv.org/pdf/1304.1920"
     """
-    n_train = jnp.minimum(n_steps//10,5000)*0
+    n_train = jnp.minimum(n_steps//10,5000)
 
     counter = 0
     _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(log_probability),q0)
@@ -339,14 +399,14 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
     acceptance = 0.0
     
     while True:
+        key = random.PRNGKey(counter) 
         
-        key, subkey = random.split(key)
         
-        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T, random.normal(subkey, shape=(q0.shape[0],)))
+        p0 = jnp.dot(jnp.linalg.cholesky(inverse_metric_0).T, random.normal(key, shape=(q0.shape[0],)))
         logP = log_probability(q0) - kinetic_energy(p0, inverse_metric_0)
         
-        key, subkey = random.split(subkey)
-        logu = logP - random.exponential(subkey)
+        
+        logu = logP - random.exponential(key)
 
         q_l, q_r = q0.copy(), q0.copy()
         p_l, p_r = p0.copy(), p0.copy()
@@ -362,27 +422,27 @@ def run_nuts_rmhmc(q0, n_steps, step_size, log_probability, key, queue, *args, *
 #        jax.debug.print("j = {} s = {} n = {}".format(j, s, n))
         while s == 1:
             
-            key, subkey = random.split(subkey)
-            v = random.choice(subkey, jnp.array([-1,1]))
+            key = random.PRNGKey(counter)
+            v = random.choice(key, jnp.array([-1,1]))
 
             if v == -1:
-            
-                subkey, left_key = random.split(subkey)
-                p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, left_key)
+                key = random.PRNGKey(counter-1)
+                
+                p_l, q_l, inverse_metric_l, _, _, _, qprime, nprime, sprime = build_tree(p_l, q_l, inverse_metric_l, logu, v, j, step_size, log_probability, key)
                 p_sharp_l += p_l
             
             else:
             
-                subkey, right_key = random.split(subkey)
-                _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, right_key)
+                key = random.PRNGKey(counter+1)
+                _, _, _, p_r, q_r, inverse_metric_r, qprime, nprime, sprime = build_tree(p_r, q_r, inverse_metric_r, logu, v, j, step_size, log_probability, key)
                 p_sharp_r += p_r
                 
             if sprime:
             
                 alpha = min(1, nprime / n)
-                subkey, subsubkey = random.split(subkey)
                 
-                if random.uniform(subsubkey) < alpha:
+                key = random.PRNGKey(counter)
+                if random.uniform(key) < alpha:
 
                     q0 = qprime.copy()
                     
@@ -484,17 +544,16 @@ def test_integrator(p0, q0, steps, dt, logp, inv_m):
 
 if __name__=="__main__":
     
-    dim = 10
-    n_processes = 6
+    dim = 2
+    n_processes = 1
     seed = 111
     
-    key = random.PRNGKey(seed)
-    subkeys = random.split(key, num=n_processes)
+    
 
 #    rng = [np.random.default_rng(seed = 11+j) for j in range(n_processes)]
     n_steps = 1000
-    n_leaps = 200
-    step_size = 1.9
+    n_leaps = 10
+    step_size = 2
     
     
     rng = np.random.default_rng(seed = seed)
@@ -546,18 +605,17 @@ if __name__=="__main__":
 
     from tqdm import tqdm
     
-    queue = Queue()
 
-    chains = [run_nuts_rmhmc.remote(rng.uniform(-5,5,size=dim), n_steps, step_size, logp, subkeys[j], queue) for j in range(n_processes)]
+
+    chains = [run_rmhmc(q0,  n_steps, n_leaps,step_size, logp, ) for j in range(n_processes)]
     
+    from tqdm import tqdm
     pbar = tqdm(total = n_steps*n_processes)
-    qs = np.zeros((n_steps*n_processes, dim))
-    n = 0
-    
-    while n < n_steps*n_processes:
-        qs[n] = queue.get()
-        pbar.update(1)
-        n += 1
+    print(chains)
+    qs = chains[0]
+    print(qs)
+
+    from raynest.nest2pos import autocorrelation, acl
 
     thinning = int(max([acl(q) for q in qs.T]))
     
