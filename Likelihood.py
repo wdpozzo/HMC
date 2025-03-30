@@ -204,10 +204,22 @@ def _ab_factors(g_, lat, ra, dec, lst):
     return a_, b_
 
 def TaylorF2(params, frequency_array):
-    # Extract parameters
+    # default_names = ['m1','m2','logdistance','phiref', 'costheta_jn',  ,'ra','dec','tc',,'psi',]
 
+    # # Extract parameters
+    # [ np.float64(36.828497064389393),
+    #                     np.float64(29.2289012101475),
+                      
+    #                    np.float64(4.970836395983002),
+    #                    np.float64(2.1457700661243417),
+    #                    np.float64(-1.1216815578621249),
+    #                    np.float64(1126259462.4088995),
+    #                    np.float64(-0.4819802030544022),
+    #                    np.float64(1.5720689487945567),
+    #                    np.float64(7.505442867400122)
+    #                    ]
       
-    m1, m2, phi_c, logdistance, costheta_jn = params[0], params[1], params[2],np.float64(7.505442867400122), np.float64(-0.4819802030544022)# np.float64(2.970836395983002),
+    m1, m2, phi_c, logdistance, costheta_jn = params[0], params[1], params[3], params[2], np.float64(-0.4819802030544022)# np.float64(2.970836395983002),
     
     
 #    if m2 > m1:
@@ -580,23 +592,27 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
 
     detectors = detector_constructor(["H1"], channel=None)
-    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+    default_names = ['m1','m2','phiref','ra','dec','tc','costheta_jn','psi','logdistance']
     
-    q_inj = np.array([ np.float64(36.828497064389393),
-                        np.float64(29.2289012101475),
-                      
+    q_inj = np.array([ np.float64(40.828497064389393),
+                        np.float64(20.2289012101475),
+                       np.float64(7.505442867400122),
                        np.float64(4.970836395983002),
+                       np.float64(-0.4819802030544022),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
-                       np.float64(-0.4819802030544022),
+                       
                        np.float64(1.5720689487945567),
-                       np.float64(6.2)
+                       
                        ])
     
-    q0 = np.array([     np.float64(38.88),
-                       np.float64(27.6),
-                       np.float64(4.0),
+    q0 = np.array([     np.float64(43.88),
+                       np.float64(30.6),
+                       np.float64(8.905442867400122), 
+                       np.float64(2.270836395983002),
+
+                      
                        ])
 
     # q0 = q_inj[:2]
@@ -607,12 +623,12 @@ if __name__=="__main__":
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 3000
+    n_steps = 2000
     # n_leaps = 10
     # step_size = 0.1
 
-    n_leaps =50
-    step_size = 0.05
+    n_leaps =10
+    step_size = 0.1
     n_processes = 1
     seed        = 33
     
@@ -631,8 +647,8 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
 
-    bounds = jnp.array([ [35, 38], [28, 31], [4, 6]])
-    q0s = rng.normal(0.0,1.0,size=(n_processes,3))+q0
+    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi]])
+    q0s = rng.normal(0.0,0.01,size=(n_processes,4))+q0
     
     print("initial starting points:")
     for q0 in q0s:
@@ -678,19 +694,18 @@ if __name__=="__main__":
     # fig.colorbar(C)
     # fig.savefig("likelihood.png")
 #
-#    
-#    fig = plt.figure()
-#    for i,n in enumerate(names):
-#        ax = fig.add_subplot(len(names),1,(i+1))
-#        ax.plot(samples[:,i],'o-',lw=0.2,color='blue')
-#        ax.axhline(M.means[i],color='r')
-#        ax.set_ylabel(n, fontsize=4)
-#    plt.subplots_adjust()
-#    plt.savefig('trace.pdf',bbox_inches='tight')
+   
+    fig = plt.figure()
+    for i,n in enumerate(qs.T):
+        ax = fig.add_subplot(len(qs.T),1,(i+1))
+        ax.plot(qs[:,i],'o-',lw=0.2,color='blue')
+        ax.set_ylabel(i, fontsize=4)
+    plt.subplots_adjust()
+    plt.savefig('trace.pdf',bbox_inches='tight')
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:3],
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:4],
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
