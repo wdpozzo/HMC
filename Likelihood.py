@@ -219,7 +219,7 @@ def TaylorF2(params, frequency_array):
     #                    np.float64(7.505442867400122)
     #                    ]
       
-    m1, m2, phi_c, logdistance, costheta_jn = params[0], params[1], params[3], params[2], np.float64(-0.4819802030544022)# np.float64(2.970836395983002),
+    m1, m2, phi_c, logdistance, theta_jn = params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
     
     
 #    if m2 > m1:
@@ -232,7 +232,7 @@ def TaylorF2(params, frequency_array):
 
     # Compute mass and distance-related terms
     distance = jnp.exp(logdistance)
-    iota = jnp.arccos(costheta_jn)
+    iota = theta_jn
     nu = q / ((1 + q) ** 2)
 
     Mc *= M_sun
@@ -611,6 +611,7 @@ if __name__=="__main__":
                        np.float64(30.6),
                        np.float64(8.905442867400122), 
                        np.float64(2.270836395983002),
+                        np.float64(-0.48),
 
                       
                        ])
@@ -623,12 +624,12 @@ if __name__=="__main__":
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 2000
+    n_steps = 10000
     # n_leaps = 10
     # step_size = 0.1
 
     n_leaps =10
-    step_size = 0.1
+    step_size = 0.06
     n_processes = 1
     seed        = 33
     
@@ -647,8 +648,8 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
 
-    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi]])
-    q0s = rng.normal(0.0,0.01,size=(n_processes,4))+q0
+    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-np.pi/2, np.pi/2]])
+    q0s = rng.normal(0.0,0.01,size=(n_processes,5))+q0
     
     print("initial starting points:")
     for q0 in q0s:
@@ -705,7 +706,7 @@ if __name__=="__main__":
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:4],
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:5],
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
