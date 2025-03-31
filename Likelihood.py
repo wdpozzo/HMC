@@ -606,9 +606,9 @@ if __name__=="__main__":
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 100000
+    n_steps = 1000
     n_leaps = 50
-    step_size = 1.0
+    step_size = 0.3
     n_processes = 6
     seed        = 33
     
@@ -644,17 +644,17 @@ if __name__=="__main__":
     
     for i in range(n_steps*n_processes):
         q_ = queue.get()
-        print(i, q_, queue.qsize())
         qs[i] = q_
         pbar.update(1)
 
+    ray.shutdown()
     from raynest.nest2pos import autocorrelation, acl
     
     thinning = int(max([acl(q) for q in qs.T]))
     if thinning < 1:
         thinning = 1
     print("ACL = {}".format(thinning))
-    qs = qs[::thinning]
+    qs_ind = qs[::thinning]
     print("independent samples = {}".format(qs.shape[0]))
 
     x = np.linspace(35,45,200)
@@ -670,6 +670,7 @@ if __name__=="__main__":
     ax.axhline(q_inj[1], color='r')
     C = ax.contour(X, Y, Z, 32)
     ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+    ax.plot(qs[:,0],qs[:,1],'.',alpha=0.5,color='green')
     fig.colorbar(C)
     fig.savefig("likelihood.png")
 #
