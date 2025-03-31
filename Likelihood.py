@@ -60,7 +60,7 @@ def log_posterior(params, detector_list):
     
     return  log_prior(params) + log_likelihood(params, detector_list)
 
-@partial(jax.jit, static_argnums = (1))
+#@partial(jax.jit, static_argnums = (1))
 def log_likelihood(params, detector_list):
     # Ensure the list of log-likelihoods is a JAX array
     log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_list])
@@ -68,7 +68,7 @@ def log_likelihood(params, detector_list):
     # Then use jnp.sum
     return jnp.sum(log_likelihoods)
 
-@partial(jax.jit, static_argnums = (1))"
+#@partial(jax.jit, static_argnums = (1))
 def single_detector_log_likelihood(params, detector_dictionary):
     h = project_waveform(params, detector_dictionary)
     residuals = detector_dictionary["FrequencySeries"] - h
@@ -82,7 +82,7 @@ def single_detector_log_likelihood(params, detector_dictionary):
 #    exit()
     return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
 
-@partial(jax.jit, static_argnums = (1))
+#@partial(jax.jit, static_argnums = (1))
 def project_waveform(params, detector_dictionary):
         #    default_names = ['m1','m2','logdistance','phiref','ra','dec','tc','costheta_jn','psi']
     
