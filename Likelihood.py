@@ -20,10 +20,10 @@ from granite.noise.noise import load_data, generate_data
 import sys
 
 def log_prior(params):
-#    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+#    default_names = ['m1','m2','logdistance','phiref','ra','dec','tc','costheta_jn','psi']
  
     logP = 0.0
-#    logP += 3.0*params[8]
+    logP += 3.0*params[2]
 #
 #    # declination
 #    logP += jnp.log(jnp.abs(jnp.cos(params[2])))
@@ -60,7 +60,7 @@ def log_posterior(params, detector_list):
     
     return  log_prior(params) + log_likelihood(params, detector_list)
 
-#@partial(jax.jit, static_argnums = (1))
+@partial(jax.jit, static_argnums = (1))
 def log_likelihood(params, detector_list):
     # Ensure the list of log-likelihoods is a JAX array
     log_likelihoods = jnp.array([single_detector_log_likelihood(params, det) for det in detector_list])
@@ -68,6 +68,7 @@ def log_likelihood(params, detector_list):
     # Then use jnp.sum
     return jnp.sum(log_likelihoods)
 
+@partial(jax.jit, static_argnums = (1))"
 def single_detector_log_likelihood(params, detector_dictionary):
     h = project_waveform(params, detector_dictionary)
     residuals = detector_dictionary["FrequencySeries"] - h
@@ -80,12 +81,15 @@ def single_detector_log_likelihood(params, detector_dictionary):
 #    plt.show()
 #    exit()
     return -detector_dictionary["TwoDeltaTOverN"]*jnp.vdot(residuals, residuals/detector_dictionary["sigmasq"]).real
-    
+
+@partial(jax.jit, static_argnums = (1))
 def project_waveform(params, detector_dictionary):
-        #    default_names = ['mc','q','phiref','ra','dec','tc','costheta_jn','psi','logdistance']
+        #    default_names = ['m1','m2','logdistance','phiref','ra','dec','tc','costheta_jn','psi']
     
-    f = detector_dictionary["Frequency"]
-    h_plus, h_cross = TaylorF2(params, f)
+    fmin = detector_dictionary["flow"]
+    fmax = detector_dictionary["fhigh"]
+    df   = detector_dictionary["df"]
+    h_plus, h_cross = TaylorF2(params, fmin, fmax, df)
     #gmst = np.radians(self.lst_estimate(GPS_time))
     latitute  = detector_dictionary["latitude"]
     longitude = detector_dictionary["longitude"]
@@ -100,12 +104,12 @@ def project_waveform(params, detector_dictionary):
 
     timedelay       = TimeDelayFromEarthCenter(latitute, longitude, ra, dec, tc)
     timeshift       = timedelay
-    shift           = 2.0*np.pi*f*timeshift
+    shift           = 2.0*np.pi*detector_dictionary["Frequency"]*timeshift
 
     h = (fplus*h_plus + fcross*h_cross)*(jnp.cos(shift)-1j*jnp.sin(shift))
     return h
 
-#@partial(jax.jit, static_argnums=(1,2,3,4))
+@partial(jax.jit, static_argnums=(1,2,3,4))
 def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, det_zeta):
     '''
     #    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
@@ -203,11 +207,13 @@ def _ab_factors(g_, lat, ra, dec, lst):
 
     return a_, b_
 
-def TaylorF2(params, frequency_array):
+@partial(jax.jit, static_argnums=(1,2,3))
+def TaylorF2(params, fmin, fmax, df):
     # Extract parameters
 
-      
-    m1, m2, phi_c, logdistance, costheta_jn = params[0], params[1], np.float64(2.970836395983002),np.float64(7.505442867400122), np.float64(-0.4819802030544022)
+    frequency_array = jnp.arange(fmin, fmax, step=df)
+    
+    m1, m2, logdistance, phi_c, costheta_jn = params[0], params[1], params[2], np.float64(2.970836395983002), np.float64(-0.4819802030544022)
     
 #    if m2 > m1:
 #        m1, m2 = m2, m1
@@ -579,23 +585,25 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
 
     detectors = detector_constructor(["H1"], channel=None)
-    default_names = ['phiref','ra','dec','tc','mc','q','costheta_jn','psi','logdistance']
+    default_names = ['m1','m2','logdistance','phiref','ra','dec','tc','costheta_jn','psi']
     
     q_inj = np.array([
-                        np.float64(40.2289012101475),
+                       np.float64(40.2289012101475),
                        np.float64(36.828497064389393),
+                       np.float64(7.505442867400122),
                        np.float64(2.970836395983002),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
                        np.float64(-0.4819802030544022),
-                       np.float64(1.5720689487945567),
-                       np.float64(7.505442867400122)
+                       np.float64(1.5720689487945567)
+
                        ])
     
     q0 = np.array([
                        np.float64(39.6),
-                       np.float64(36.88)
+                       np.float64(36.88),
+                       np.float64(7.),
                        ])
 
 #    q0 = q_inj[:2]
@@ -606,7 +614,7 @@ if __name__=="__main__":
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 1000
+    n_steps = 50
     n_leaps = 50
     step_size = 0.3
     n_processes = 6
@@ -628,7 +636,7 @@ if __name__=="__main__":
     
     queue = Queue()
     
-    q0s = rng.normal(0.0,1.0,size=(n_processes,2))+q0
+    q0s = rng.normal(0.0,1.0,size=(n_processes,len(q0)))+q0
     
     print("initial starting points:")
     for q0 in q0s:
@@ -640,7 +648,7 @@ if __name__=="__main__":
     
     from tqdm import tqdm
     pbar = tqdm(total = n_steps*n_processes)
-    qs = np.zeros((n_steps*n_processes, 2))
+    qs = np.zeros((n_steps*n_processes, len(q0)))
     
     for i in range(n_steps*n_processes):
         q_ = queue.get()
@@ -657,22 +665,25 @@ if __name__=="__main__":
     qs_ind = qs[::thinning]
     print("independent samples = {}".format(qs.shape[0]))
 
-    x = np.linspace(35,45,200)
-    y = np.linspace(35,45,200)
-    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
-
-    X, Y = np.meshgrid(x,y)
-    
     import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax  = fig.add_subplot(111)
-    ax.axvline(q_inj[0], color='r')
-    ax.axhline(q_inj[1], color='r')
-    C = ax.contour(X, Y, Z, 32)
-    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
-    ax.plot(qs[:,0],qs[:,1],'.',alpha=0.5,color='green')
-    fig.colorbar(C)
-    fig.savefig("likelihood.png")
+    
+    if len(q0) == 2:
+        x = np.linspace(35,45,200)
+        y = np.linspace(35,45,200)
+        Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
+
+        X, Y = np.meshgrid(x,y)
+        
+        
+        fig = plt.figure()
+        ax  = fig.add_subplot(111)
+        ax.axvline(q_inj[0], color='r')
+        ax.axhline(q_inj[1], color='r')
+        C = ax.contour(X, Y, Z, 32)
+        ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+        ax.plot(qs[:,0],qs[:,1],'.',alpha=0.5,color='green')
+        fig.colorbar(C)
+        fig.savefig("likelihood.png")
 #
 #    
 #    fig = plt.figure()
@@ -686,7 +697,7 @@ if __name__=="__main__":
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:2],
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:len(q0)],
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
