@@ -219,7 +219,7 @@ def TaylorF2(params, frequency_array):
     #                    np.float64(7.505442867400122)
     #                    ]
       
-    m1, m2, phi_c, logdistance, theta_jn = params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
+    m1, m2, phi_c, logdistance, cos_iota= params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
     
     
 #    if m2 > m1:
@@ -232,7 +232,7 @@ def TaylorF2(params, frequency_array):
 
     # Compute mass and distance-related terms
     distance = jnp.exp(logdistance)
-    iota = theta_jn
+    
     nu = q / ((1 + q) ** 2)
 
     Mc *= M_sun
@@ -279,7 +279,7 @@ def TaylorF2(params, frequency_array):
     exp_phi_cross = jnp.exp(1j * phi_cross)
 
     # Compute strain polarizations
-    cos_iota = jnp.cos(iota)
+    # cos_iota = jnp.cos(iota)
     cos_iota_sq = cos_iota**2
 
     h_plus = phase_factor * amp * ((1 + cos_iota_sq) / 2) * exp_phi_plus
@@ -598,7 +598,7 @@ if __name__=="__main__":
                         np.float64(20.2289012101475),
                        np.float64(7.505442867400122),
                        np.float64(4.970836395983002),
-                       np.float64(-0.4819802030544022),
+                       np.float64(-0.01),
                        np.float64(2.1457700661243417),
                        np.float64(-1.1216815578621249),
                        np.float64(1126259462.4088995),
@@ -624,12 +624,16 @@ if __name__=="__main__":
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 10000
+    n_steps = 2000
     # n_leaps = 10
     # step_size = 0.1
 
-    n_leaps =10
-    step_size = 0.06
+    # n_leaps = 20
+    # step_size = 0.1
+
+    n_leaps = 20
+    step_size = 0.1
+
     n_processes = 1
     seed        = 33
     
@@ -648,8 +652,8 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
 
-    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-np.pi/2, np.pi/2]])
-    q0s = rng.normal(0.0,0.01,size=(n_processes,5))+q0
+    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-1, 1]])
+    q0s = rng.normal(0.0,0.02,size=(n_processes,5))+q0
     
     print("initial starting points:")
     for q0 in q0s:
