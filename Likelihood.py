@@ -58,7 +58,7 @@ def in_bounds(param, bounds):
 
 def log_posterior(params, detector_list):
     
-    return  log_prior(params) + log_likelihood(params, detector_list)
+    return  log_prior(params) +log_likelihood(params, detector_list)
 
 #@partial(jax.jit, static_argnums = (1))
 def log_likelihood(params, detector_list):
@@ -96,6 +96,9 @@ def project_waveform(params, detector_dictionary):
     
     ra = np.float64(2.1457700661243417)#np.radians(right_ascension)
     dec = np.float64(-1.1216815578621249)#np.radians(declination)
+
+    ra = params[0]
+    dec = params[1]
     tc  = np.float64(1126259462.4088995)
 
     timedelay       = TimeDelayFromEarthCenter(latitute, longitude, ra, dec, tc)
@@ -133,8 +136,10 @@ def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, de
 
 
 
-    ra = np.float64(2.1457700661243417)#np.radians(right_ascension)
-    dec = np.float64(-1.1216815578621249)#np.radians(declination)
+    # ra = np.float64(2.1457700661243417)#np.radians(right_ascension)
+    # dec = np.float64(-1.1216815578621249)#np.radians(declination)
+    ra = params[0]
+    dec = params[1]
 
     pol = np.float64(1.5720689487945567)#np.radians(polarization)
     tc  = np.float64(1126259462.4088995)
@@ -220,7 +225,8 @@ def TaylorF2(params, frequency_array):
     #                    ]
       
     m1, m2, phi_c, logdistance, cos_iota= params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
-    
+    m1, m2, phi_c, logdistance, cos_iota= 40., 20., 0., 7., 0.
+
     
 #    if m2 > m1:
 #        m1, m2 = m2, m1
@@ -561,19 +567,21 @@ def detector_constructor(names, channel = None):
     return D
 
 def inject_signal_in_noise(params,
-                           detector_dictionary):
+                           detector_dictionaries):
 
-    h = project_waveform(params, detector_dictionary)
+    for detector_dictionary in detector_dictionaries:
+       
+        h = project_waveform(params, detector_dictionary)
+        
+        # add to the detector noise
+        detector_dictionary["FrequencySeries"] += h
+        
+        # signal-to-noise ratio
+        SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
+        
+        print('Injected SNR = %.2f' %(SNR))
     
-    # add to the detector noise
-    detector_dictionary["FrequencySeries"] += h
-    
-    # signal-to-noise ratio
-    SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
-    
-    print('Injected SNR = %.2f' %(SNR))
-    
-    return SNR, h
+    return 
 
 
 
@@ -591,12 +599,12 @@ if __name__=="__main__":
 
     from hmc_func import run_nuts_rmhmc, run_rmhmc
 
-    detectors = detector_constructor(["H1"], channel=None)
+    detectors = detector_constructor(["H1",   ], channel=None)
     default_names = ['m1','m2','phiref','ra','dec','tc','costheta_jn','psi','logdistance']
     
     q_inj = np.array([ np.float64(40.828497064389393),
                         np.float64(20.2289012101475),
-                       np.float64(7.505442867400122),
+                       np.float64(5.505442867400122),
                        np.float64(4.970836395983002),
                        np.float64(-0.01),
                        np.float64(2.1457700661243417),
@@ -615,16 +623,19 @@ if __name__=="__main__":
 
                       
                        ])
+    
+
+    truth = jnp.array([2.14, 0.])
 
     # q0 = q_inj[:2]
 
-    snr, h_inj = inject_signal_in_noise(q_inj, detectors[0])
+    inject_signal_in_noise(truth, detectors)
 
     logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     from hmc_func import test_integrator, compute_mass_matrix
     
-    n_steps = 2000
+    n_steps = 20000
     # n_leaps = 10
     # step_size = 0.1
 
@@ -632,7 +643,7 @@ if __name__=="__main__":
     # step_size = 0.1
 
     n_leaps = 20
-    step_size = 0.1
+    step_size = 0.035
 
     n_processes = 1
     seed        = 33
@@ -653,7 +664,10 @@ if __name__=="__main__":
     
 
     bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-1, 1]])
-    q0s = rng.normal(0.0,0.02,size=(n_processes,5))+q0
+    bounds = jnp.array([ [0, 2*np.pi], [-np.pi, np.pi]])
+
+ 
+    q0s = rng.normal(0.0,3,size=(n_processes,2))+truth
     
     print("initial starting points:")
     for q0 in q0s:
@@ -680,25 +694,25 @@ if __name__=="__main__":
     qs = qs[::thinning]
     print("independent samples = {}".format(qs.shape[0]))
 
-    # x = np.linspace(5,70,200)
-    # y = np.linspace(5,70,200)
+    x = np.linspace(0,2*np.pi,200)
+    y = np.linspace(-np.pi,np.pi,200)
     
-    # Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
+    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
 
-    # X, Y = np.meshgrid(x,y)
+    X, Y = np.meshgrid(x,y)
     
     import matplotlib.pyplot as plt
-    # fig = plt.figure()
-    # ax  = fig.add_subplot(111)
-    # ax.axvline(q_inj[0], color='r')
-    # ax.axhline(q_inj[1], color='r')
-    # C = ax.contour(X, Y, Z, 32)
-    # ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
-    # ax.plot(q0s[:, 0],q0s[:, 1],'o',color='r', label = 'starting point')
-    # ax.legend()
-    # fig.colorbar(C)
-    # fig.savefig("likelihood.png")
-#
+    fig = plt.figure()
+    ax  = fig.add_subplot(111)
+    ax.axvline(truth[0], color='r')
+    ax.axhline(truth[1], color='r')
+    C = ax.contour(X, Y, Z, 32)
+    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+    ax.plot(q0s[:, 0],q0s[:, 1],'o',color='r', label = 'starting point')
+    ax.legend()
+    fig.colorbar(C)
+    fig.savefig("likelihood.png")
+
    
     fig = plt.figure()
     for i,n in enumerate(qs.T):
@@ -710,7 +724,7 @@ if __name__=="__main__":
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = q_inj[:5],
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = truth,
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     
     plt.savefig("corner.pdf",bbox_inches='tight')
