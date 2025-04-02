@@ -666,7 +666,7 @@ if __name__=="__main__":
     boundary_conditions = jnp.array([1, 1, 0, 1, 1, 1, 0, 0])
     
     q0s = rng.normal(0.0, 0.2,size=(n_processes,len(truth)))+ initial_value
-    q0s = [jax.random.uniform(jax.random.PRNGKey(j),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) for j in range(n_processes)]
+    q0s = [jax.random.uniform(jax.random.PRNGKey(j+1),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) for j in range(n_processes)]
     print("initial starting points:")
     for q0 in q0s:
         print("q0 = {}".format(q0))
