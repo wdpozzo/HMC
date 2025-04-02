@@ -666,7 +666,7 @@ if __name__=="__main__":
     boundary_conditions = jnp.array([1, 1, 0, 1, 1, 1, 0, 0])
     
     q0s = rng.normal(0.0, 0.2,size=(n_processes,len(truth)))+ initial_value
-    
+    q0s = [jax.random.uniform(jax.random.PRNGKey(j),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) for j in range(n_processes)]
     print("initial starting points:")
     for q0 in q0s:
         print("q0 = {}".format(q0))
@@ -722,7 +722,7 @@ if __name__=="__main__":
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = truth,labels=names,
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = np.array(truth),labels=names,
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
     plt.annotate(f"SNR= {snr}", xy=(0, 2.75), xycoords="axes fraction",)
     # plt.annotate(f"nsteps= {n_steps}", xy=(0.7, 0.70), xycoords="axes fraction",)

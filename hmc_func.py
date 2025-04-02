@@ -256,7 +256,6 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     print("initial metric estimate = {}, det = {}".format(inverse_mass_matrix_0, np.exp(logdet)))
     pbar = tqdm(total = n_steps)
     # step_size  = np.linalg.det(inverse_mass_matrix_0)*50/n_leaps
-    tuner = DualAveragingStepSize(step_size, target_accept=0.90, gamma=0.05, t0=10.0, kappa=0.75)
     
     i = 0
     
@@ -353,9 +352,14 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
         acceptance = i/counter
         pbar.set_postfix({"acceptance":acceptance, "step_size": step_size})
         
+        tuner1 = DualAveragingStepSize(step_size, target_accept=0.89, gamma=0.05, t0=10.0, kappa=0.75)
+        tuner2 = DualAveragingStepSize(step_size, target_accept=0.90, gamma=0.05, t0=10.0, kappa=0.75)
 
-        if counter < n_train:
-            step_size, _ = tuner.update(acceptance)
+
+        if counter < n_train //2:
+            step_size, _ = tuner1.update(acceptance)
+        elif counter > n_train //2 and counter < n_train:
+            step_size, _ = tuner2.update(acceptance)
         #     pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
 
         
