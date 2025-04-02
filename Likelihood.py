@@ -141,7 +141,8 @@ def antenna_pattern_functions(params, det_latitute, det_longitude, det_gamma, de
     ra = params[0]
     dec = params[1]
 
-    pol = np.float64(1.5720689487945567)#np.radians(polarization)
+    # pol = np.float64(1.5720689487945567)#np.radians(polarization)
+    pol = params[5]
     tc  = np.float64(1126259462.4088995)
     lat = jnp.radians(det_latitute)
     g_ = jnp.radians(det_gamma)
@@ -225,7 +226,7 @@ def TaylorF2(params, frequency_array):
     #                    ]
       
     m1, m2, phi_c, logdistance, cos_iota= params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
-    m1, m2, phi_c, logdistance, cos_iota= 40., 20., params[4], params[2], params[3]
+    m1, m2, phi_c, logdistance, cos_iota= params[6], params[7], params[4], params[2], params[3]
 
     
 #    if m2 > m1:
@@ -624,8 +625,8 @@ if __name__=="__main__":
                       
                        ])
     
-
-    truth = jnp.array([1.14, 0.7, 5., 0, 2.])
+    #ra, dec, distance, inclination , phase, polarization, m1, m2
+    truth = jnp.array([1.14, 0.7, 5., 0, 2., 1., 42, 24,])
 
     # q0 = q_inj[:2]
 
@@ -642,8 +643,8 @@ if __name__=="__main__":
     # n_leaps = 20
     # step_size = 0.1
 
-    n_leaps = 20
-    step_size = 0.0005
+    n_leaps = 15
+    step_size = 0.0015
 
     n_processes = 1
     seed        = 33
@@ -653,21 +654,16 @@ if __name__=="__main__":
     
     rng = np.random.default_rng(seed = seed)
     
-#    check_posterior(detectors[0])
-#    exit()
-#    _, inverse_metric_0, _ = compute_mass_matrix(jax.hessian(logp),q0)
-#    p0 = np.dot(np.linalg.cholesky(inverse_metric_0).T,rng.normal(size=q0.shape[0]))
-#    test_integrator(p0, q0, n_leaps, step_size, logp, inverse_metric_0)
-#    exit()
+
     
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
+    names = ['ra','dec','logdistance','costheta_jn','phiref','pol', 'm1','m2', 'tc']
+    bounds = jnp.array([ [0, 2*np.pi], [-np.pi/2, np.pi/2], [1, 9], [-1, 1], [0, 2*np.pi], [0, np.pi], [35, 45], [15, 25]])
 
-    bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-1, 1]])
-    bounds = jnp.array([ [0, 2*np.pi], [-np.pi/2, np.pi/2], [1, 9], [-1, 1], [0, 2*np.pi]])
-    boundary_conditions = jnp.array([1, 1, 0, 1, 1])
+    boundary_conditions = jnp.array([1, 1, 0, 1, 1, 1, 0, 0])
     
-    q0s = rng.normal(0.0, 0.8,size=(n_processes,len(truth)))+truth
+    q0s = rng.normal(0.0, 0.1,size=(n_processes,len(truth)))+truth
     
     print("initial starting points:")
     for q0 in q0s:
