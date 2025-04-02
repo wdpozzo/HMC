@@ -82,8 +82,8 @@ def TimeDelayFromEarthCenter( lat, lon,  ra,dec,GPS_time,):
     c  = 2.99792458*1e8
     lst = GreenwichMeanSiderealTime(GPS_time) + lon 
     
-    dec = np.radians(90- dec)
-    ra = np.radians(ra)
+    dec = np.pi/2 -dec
+    # ra = np.radians(ra)
     s = np.array([np.sin(dec)*np.cos(ra), np.sin(dec)*np.sin(ra), np.cos(dec)])
     d = np.array([np.cos(lat)*np.cos(lst), np.cos(lat)*np.sin(lst), np.sin(lat)])
     deltaT = -(np.dot(s, d))*EarthRadius/c

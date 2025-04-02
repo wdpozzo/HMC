@@ -243,7 +243,7 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
 def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary_conditions, *args, **kwargs):
 
     n_train = n_steps//2
-    # n_train = 200
+    # n_train = 500
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
     gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
@@ -269,7 +269,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
         # p0 = jnp.dot(np.linalg.cholesky(inverse_mass_matrix_0).T, random.normal(key, shape=q0.shape[0]))
         p0 = random.multivariate_normal(key, mean=jnp.zeros(q0.shape[0]), cov=inverse_mass_matrix_0)
         # print("p0",p0)
-        # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.9, random.choice(key, jnp.array([-1, 1]))*p0*10, p0)
+        # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.4,  p0*1000, p0)
         # print("p0dopo",p0)
         # print('invM',inverse_mass_matrix_0)
         # p0 = jnp.where(random.uniform(key, shape=q0.shape[0]) >0.9, random.choice(keyp0*2, p0)
@@ -302,7 +302,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
             h_values.append(hamiltonian(p_, q_, log_probability, inverse_mass_matrix_0))
             p_values.append(p_)
             q_values.append(q_)
-            p, q, g, = leap_frog(step_size, p_, q_, log_probability, bounds, )
+            p, q, g, = leap_frog(step_size, p_, q_, log_probability, bounds, boundary_conditions)
 
             # print("pre - leap ",k,"p:",p,"q:",q,"invM:",g)
             if jnp.isnan(p).any() or jnp.isnan(q).any():
@@ -365,7 +365,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     return qs
 
 @partial(jax.jit, static_argnums = (3))
-def leap_frog(dt, p0, q0, logp, bounds, ):
+def leap_frog(dt, p0, q0, logp, bounds,boundary_conditions ):
     p = p0.copy()
     q = q0.copy()
 
@@ -383,15 +383,24 @@ def leap_frog(dt, p0, q0, logp, bounds, ):
     # # q = jnp.where(q < lower_bounds, 2*lower_bounds-q, q)#np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
     # # q = jnp.where(q > upper_bounds, 2*upper_bounds-q, q)
     # #circular booundary conditions
-    q = jnp.where(q < lower_bounds, q -lower_bounds + upper_bounds, q)#np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
-    q = jnp.where(q > upper_bounds, q-upper_bounds+lower_bounds, q)
+    # q = jnp.where(q < lower_bounds, q -lower_bounds + upper_bounds, q)#np.clip(q, lower_bounds, upper_bounds)  # Clip instead of multiple conditions
+    # q = jnp.where(q > upper_bounds, q-upper_bounds+lower_bounds, q)
 
     # whether to apply reflective or circular boundary condition, position lower bound case
     # 0 is the reflective case, 1 is the circular one
+    reflect_factor = jnp.where(over_upper | under_lower, -1.0, 1.0)
+    p = jnp.where(boundary_conditions == 0, p*reflect_factor, p)
+    q  = jnp.where(boundary_conditions == 0, jnp.where(q < lower_bounds, 2*lower_bounds-q, q), jnp.where(q < lower_bounds, q -lower_bounds + upper_bounds, q))
+
+    # whether to apply reflective or circular boundary condition, position upper bound case
+    q = jnp.where(boundary_conditions == 0, jnp.where(q > upper_bounds, 2*upper_bounds-q, q) ,  jnp.where(q > upper_bounds, q-upper_bounds+lower_bounds, q))
+    # p *= reflect_factor 
+
+
 
 
     #same thing for the momentum, in the circular case there is no momentum flipping
-    reflect_factor = jnp.where(over_upper | under_lower, -1.0, 1.0)
+   
     
     
  

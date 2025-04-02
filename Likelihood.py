@@ -58,7 +58,7 @@ def in_bounds(param, bounds):
 
 def log_posterior(params, detector_list):
     
-    return  log_prior(params) +log_likelihood(params, detector_list)
+    return  log_prior(params) +log_likelihood(params, detector_list)#*0.0005
 
 #@partial(jax.jit, static_argnums = (1))
 def log_likelihood(params, detector_list):
@@ -225,7 +225,7 @@ def TaylorF2(params, frequency_array):
     #                    ]
       
     m1, m2, phi_c, logdistance, cos_iota= params[0], params[1], params[3], params[2], params[4]# np.float64(2.970836395983002),
-    m1, m2, phi_c, logdistance, cos_iota= 40., 20., 0., 7., 0.
+    m1, m2, phi_c, logdistance, cos_iota= 40., 20., params[4], params[2], params[3]
 
     
 #    if m2 > m1:
@@ -599,12 +599,12 @@ if __name__=="__main__":
 
     from hmc_func import run_nuts_rmhmc, run_rmhmc
 
-    detectors = detector_constructor(["H1",   ], channel=None)
+    detectors = detector_constructor(["H1", "L1", "V1"  ], channel=None)
     default_names = ['m1','m2','phiref','ra','dec','tc','costheta_jn','psi','logdistance']
     
     q_inj = np.array([ np.float64(40.828497064389393),
                         np.float64(20.2289012101475),
-                       np.float64(5.505442867400122),
+                       np.float64(3.505442867400122),
                        np.float64(4.970836395983002),
                        np.float64(-0.01),
                        np.float64(2.1457700661243417),
@@ -625,7 +625,7 @@ if __name__=="__main__":
                        ])
     
 
-    truth = jnp.array([2.14, 0.])
+    truth = jnp.array([1.14, 0.7, 5., 0, 2.])
 
     # q0 = q_inj[:2]
 
@@ -634,8 +634,8 @@ if __name__=="__main__":
     logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
     from hmc_func import test_integrator, compute_mass_matrix
-    
-    n_steps = 20000
+
+    n_steps = 3000
     # n_leaps = 10
     # step_size = 0.1
 
@@ -643,7 +643,7 @@ if __name__=="__main__":
     # step_size = 0.1
 
     n_leaps = 20
-    step_size = 0.035
+    step_size = 0.0005
 
     n_processes = 1
     seed        = 33
@@ -664,10 +664,10 @@ if __name__=="__main__":
     
 
     bounds = jnp.array([ [35, 45], [15, 25], [1, 9], [0, 2*np.pi], [-1, 1]])
-    bounds = jnp.array([ [0, 2*np.pi], [-np.pi, np.pi]])
-
- 
-    q0s = rng.normal(0.0,3,size=(n_processes,2))+truth
+    bounds = jnp.array([ [0, 2*np.pi], [-np.pi/2, np.pi/2], [1, 9], [-1, 1], [0, 2*np.pi]])
+    boundary_conditions = jnp.array([1, 1, 0, 1, 1])
+    
+    q0s = rng.normal(0.0, 0.8,size=(n_processes,len(truth)))+truth
     
     print("initial starting points:")
     for q0 in q0s:
@@ -677,7 +677,7 @@ if __name__=="__main__":
 
     chains = [run_rmhmc(q0s[j],  n_steps, 
                              n_leaps,
-                             step_size, logp, bounds, subkeys[j], ) for j in range(n_processes)]
+                             step_size, logp, bounds, boundary_conditions, subkeys[j], ) for j in range(n_processes)]
     
     from tqdm import tqdm
     pbar = tqdm(total = n_steps*n_processes)
@@ -693,34 +693,34 @@ if __name__=="__main__":
     print("ACL = {}".format(thinning))
     qs = qs[::thinning]
     print("independent samples = {}".format(qs.shape[0]))
-
-    x = np.linspace(0,2*np.pi,200)
-    y = np.linspace(-np.pi,np.pi,200)
-    
-    Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
-
-    X, Y = np.meshgrid(x,y)
-    
     import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax  = fig.add_subplot(111)
-    ax.axvline(truth[0], color='r')
-    ax.axhline(truth[1], color='r')
-    C = ax.contour(X, Y, Z, 32)
-    ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
-    ax.plot(q0s[:, 0],q0s[:, 1],'o',color='r', label = 'starting point')
-    ax.legend()
-    fig.colorbar(C)
-    fig.savefig("likelihood.png")
+    # x = np.linspace(0,2*np.pi,200)
+    # y = np.linspace(-np.pi/2,np.pi/2,200)
+    
+    # Z = np.array([logp(np.array([xi,yi])) for yi in y for xi in x]).reshape(x.shape[0],y.shape[0])
+
+    # X, Y = np.meshgrid(x,y)
+    
+    
+    # fig = plt.figure()
+    # ax  = fig.add_subplot(111)
+    # ax.axvline(truth[0], color='r')
+    # ax.axhline(truth[1], color='r')
+    # C = ax.contour(X, Y, Z, 32)
+    # ax.plot(qs[:,0],qs[:,1],'o-',alpha=0.5,lw=0.3)
+    # ax.plot(q0s[:, 0],q0s[:, 1],'o',color='r', label = 'starting point')
+    # ax.legend()
+    # fig.colorbar(C)
+    # fig.savefig("likelihood.png")
 
    
-    fig = plt.figure()
-    for i,n in enumerate(qs.T):
-        ax = fig.add_subplot(len(qs.T),1,(i+1))
-        ax.plot(qs[:,i],'o-',lw=0.2,color='blue')
-        ax.set_ylabel(i, fontsize=4)
-    plt.subplots_adjust()
-    plt.savefig('trace.pdf',bbox_inches='tight')
+    # fig = plt.figure()
+    # for i,n in enumerate(qs.T):
+    #     ax = fig.add_subplot(len(qs.T),1,(i+1))
+    #     ax.plot(qs[:,i],'o-',lw=0.2,color='blue')
+    #     ax.set_ylabel(i, fontsize=4)
+    # plt.subplots_adjust()
+    # plt.savefig('trace.pdf',bbox_inches='tight')
 #    
     
     from corner import corner
