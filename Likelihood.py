@@ -628,7 +628,8 @@ if __name__=="__main__":
     
     #ra, dec, distance, inclination , phase, polarization, m1, m2
     truth = jnp.array([1.14, 0.7, 7., 0, 2., 1., 42, 24,])
-    initial_value = jnp.array([1.14, 0.7, 8., 0, 2., 1., 50, 24,])
+    initial_value = jnp.array([1.04, 0.8, 8., 0, 2., 1., 50, 24,])
+
     # q0 = q_inj[:2]
     names = ['ra','dec','logdistance','costheta_jn','phiref','pol', 'm1','m2']
     snr = inject_signal_in_noise(truth, detectors)
@@ -644,7 +645,7 @@ if __name__=="__main__":
     # n_leaps = 20
     # step_size = 0.1
 
-    n_leaps = 10
+    n_leaps = 20
     step_size = 1e-5
 
     n_processes = 1
