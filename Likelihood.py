@@ -569,7 +569,7 @@ def detector_constructor(names, channel = None):
 
 def inject_signal_in_noise(params,
                            detector_dictionaries):
-
+    snr = []
     for detector_dictionary in detector_dictionaries:
        
         h = project_waveform(params, detector_dictionary)
@@ -581,8 +581,9 @@ def inject_signal_in_noise(params,
         SNR = np.sqrt(4.0*detector_dictionary["df"]*jnp.sum(jnp.conj(h)*h/detector_dictionary["PowerSpectralDensity"]).real)
         
         print('Injected SNR = %.2f' %(SNR))
-    
-    return 
+        snr.append(SNR)
+    snr = np.sqrt(np.sum(np.array(snr)**2))
+    return snr
 
 
 
@@ -626,11 +627,11 @@ if __name__=="__main__":
                        ])
     
     #ra, dec, distance, inclination , phase, polarization, m1, m2
-    truth = jnp.array([1.14, 0.7, 5., 0, 2., 1., 42, 24,])
-
+    truth = jnp.array([1.14, 0.7, 7., 0, 2., 1., 42, 24,])
+    initial_value = jnp.array([1.14, 0.7, 8., 0, 2., 1., 50, 24,])
     # q0 = q_inj[:2]
-
-    inject_signal_in_noise(truth, detectors)
+    names = ['ra','dec','logdistance','costheta_jn','phiref','pol', 'm1','m2']
+    snr = inject_signal_in_noise(truth, detectors)
 
     logp = jax.jit(partial(log_posterior, detector_list = detectors))
 
@@ -643,8 +644,8 @@ if __name__=="__main__":
     # n_leaps = 20
     # step_size = 0.1
 
-    n_leaps = 15
-    step_size = 0.0015
+    n_leaps = 10
+    step_size = 1e-5
 
     n_processes = 1
     seed        = 33
@@ -663,7 +664,7 @@ if __name__=="__main__":
 
     boundary_conditions = jnp.array([1, 1, 0, 1, 1, 1, 0, 0])
     
-    q0s = rng.normal(0.0, 0.1,size=(n_processes,len(truth)))+truth
+    q0s = rng.normal(0.0, 0.2,size=(n_processes,len(truth)))+ initial_value
     
     print("initial starting points:")
     for q0 in q0s:
@@ -720,8 +721,9 @@ if __name__=="__main__":
 #    
     
     from corner import corner
-    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = truth,
+    corner(qs, quantiles=[0.05, 0.5, 0.95], truths = truth,labels=names,
                         show_titles=True, title_kwargs={"fontsize": 12}, smooth2d=1.0)
-    
+    plt.annotate(f"SNR= {snr}", xy=(0, 2.75), xycoords="axes fraction",)
+    # plt.annotate(f"nsteps= {n_steps}", xy=(0.7, 0.70), xycoords="axes fraction",)
     plt.savefig("corner.pdf",bbox_inches='tight')
     plt.show()

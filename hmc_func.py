@@ -242,8 +242,9 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
 #@ray.remote
 def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary_conditions, *args, **kwargs):
 
-    n_train = n_steps//2
-    # n_train = 500
+    # n_train = n_steps//2
+    n_train = 500
+    n_thin  = n_steps//2
     ps = np.zeros((n_steps,q0.shape[0]))
     qs = np.zeros_like(ps)
     gs = np.zeros((n_steps,q0.shape[0],q0.shape[0]))
@@ -255,7 +256,7 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     print("initial metric estimate = {}, det = {}".format(inverse_mass_matrix_0, np.exp(logdet)))
     pbar = tqdm(total = n_steps)
     # step_size  = np.linalg.det(inverse_mass_matrix_0)*50/n_leaps
-    # tuner = DualAveragingStepSize(step_size, target_accept=0.75, gamma=0.05, t0=10.0, kappa=0.75)
+    tuner = DualAveragingStepSize(step_size, target_accept=0.90, gamma=0.05, t0=10.0, kappa=0.75)
     
     i = 0
     
@@ -353,14 +354,14 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
         pbar.set_postfix({"acceptance":acceptance, "step_size": step_size})
         
 
-        # if counter < n_train:
-        #     step_size, _ = tuner.update(acceptance)
+        if counter < n_train:
+            step_size, _ = tuner.update(acceptance)
         #     pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
 
         
       
     
-    qs = qs[n_train:]
+    qs = qs[n_thin:]
 
     return qs
 
