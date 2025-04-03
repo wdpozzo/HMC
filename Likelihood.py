@@ -645,7 +645,7 @@ if __name__=="__main__":
     # n_leaps = 20
     # step_size = 0.1
 
-    n_leaps = 20
+    n_leaps = 30
     step_size = 1e-5
 
     n_processes = 1
@@ -661,12 +661,12 @@ if __name__=="__main__":
     from hmc_func import run_nuts_rmhmc, run_rmhmc
     
     names = ['ra','dec','logdistance','costheta_jn','phiref','pol', 'm1','m2', 'tc']
-    bounds = jnp.array([ [0, 2*np.pi], [-np.pi/2, np.pi/2], [1, 9], [-1, 1], [0, 2*np.pi], [0, np.pi], [35, 45], [15, 25]])
+    bounds = jnp.array([ [0, 2*np.pi], [-np.pi/2, np.pi/2], [3, 9], [-1, 1], [0, 2*np.pi], [0, np.pi], [35, 45], [15, 25]])
 
     boundary_conditions = jnp.array([1, 1, 0, 1, 1, 1, 0, 0])
     
     q0s = rng.normal(0.0, 0.2,size=(n_processes,len(truth)))+ initial_value
-    q0s = [jax.random.uniform(jax.random.PRNGKey(j+1),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) for j in range(n_processes)]
+    q0s = [jax.random.uniform(jax.random.PRNGKey(j+100),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) for j in range(n_processes)]
     print("initial starting points:")
     for q0 in q0s:
         print("q0 = {}".format(q0))

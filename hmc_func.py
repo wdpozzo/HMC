@@ -242,7 +242,7 @@ def build_tree(p, q, inverse_metric, logu, v, j, dt, log_probability, key):
 #@ray.remote
 def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary_conditions, *args, **kwargs):
 
-    n_train = n_steps//2
+    n_train = 1000
     # n_train = 500
     n_thin  = n_steps//2
     ps = np.zeros((n_steps,q0.shape[0]))
@@ -258,11 +258,15 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     # step_size  = np.linalg.det(inverse_mass_matrix_0)*50/n_leaps
     
     i = 0
+    step_sizes = np.zeros((n_train))
+    acceptance_i = 0
+    acceptance_counter = 0
     
     while i < n_steps:
         key = random.PRNGKey(counter) 
  
         counter += 1
+        acceptance_counter += 1
         
         
 
@@ -291,6 +295,10 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
         p_ = p0
         q_ = q0
         H0 = hamiltonian(p0, q0, log_probability, inverse_mass_matrix_0)
+        if jnp.isnan(H0):
+            print("H0NAN")
+            q0 = jax.random.uniform(jax.random.PRNGKey(counter),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) 
+            continue
         print("H0",H0)
         h_values = []
         p_values = []
@@ -311,26 +319,15 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
             else:
                 p_, q_, g_ = p, q, g
 
-        # step_size  = scipy.stats.mstats.gmean(np.linalg.eigvals(np.linalg.inv(g_)*np.linalg.det(g_)))/1000
-        # step_size = np.clip(step_size, -np.inf, 1/8
-        #                     )
-#            print("post - leap ",k,"p:",p_,"q:",q_,"invM:",g_)
-        # import matplotlib.pyplot as plt
-        # plt.plot(h_values, )
-        # plt.show()
-        # plt.close()
 
-        # plt.plot(np.array(q_values).T[0], np.array(p_values).T[1])
-        # plt.show()
-        # plt.close()
-        # plt.plot(np.array(q_values)[:,0], np.array(q_values)[:,1])
-        # plt.show()
-        # import sys
-
-        # sys.exit()
 
         print("q0, q1",q0, q_)
         H     = hamiltonian(-p_, q_, log_probability, inverse_mass_matrix_0)
+        if np.isnan(H):
+            print("H1NAN")
+            q0 = jax.random.uniform(jax.random.PRNGKey(counter),shape = bounds.T[0].shape, minval=bounds[:, 0], maxval=bounds[:, 1]) 
+
+            continue
         
         alpha = min(0, H0 - H)
 
@@ -355,18 +352,28 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     
 
 
-        if counter < n_train //2:
-           target_accept = 0.8
-        if counter >= n_train //2:
-            target_accept = 0.8
+        if counter < 400:
+           target_accept = 0.81
+        if counter >= 500 and counter < 600:
+            target_accept = 0.82
+        if counter >= 700 and counter < 800:
+            target_accept = 0.83
+        if counter >= 800 and counter < 1000:
+            target_accept = 0.84
 
-        #Naivelly tune the step size, inspired by Hooke's law
-        # target_accept = 0.8
+        #Naivelly tune the step size, inspired by the spring 
+        target_accept = 0.85
         if counter < n_train:
             if acceptance <= target_accept:
-                step_size -= step_size *np.abs((target_accept - acceptance))/target_accept
+                step_size -= step_size *(np.abs((target_accept - acceptance))/target_accept)
             else:
-                step_size += step_size * np.abs((target_accept - acceptance))/target_accept
+                step_size += step_size * (np.abs((target_accept - acceptance))/target_accept)
+            step_sizes[counter] = step_size
+        # if counter == n_train:
+        #    step_size = np.mean(step_sizes[-100:])
+            
+        
+
         #     pbar.set_postfix({"step size tuning": f"{step_size:.3e}"})
 
         
@@ -375,6 +382,11 @@ def run_rmhmc(q0, n_steps, n_leaps, step_size, log_probability, bounds, boundary
     qs = qs[n_thin:]
 
     return qs
+
+
+
+
+
 
 @partial(jax.jit, static_argnums = (3))
 def leap_frog(dt, p0, q0, logp, bounds,boundary_conditions ):
